@@ -1,0 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Oswald", sans-serif;
+  --font-condensed: "Barlow Condensed", sans-serif;
+
+  --color-pl-purple: #38003c;
+  --color-pl-pink: #e90052;
+  --color-pl-cyan: #00ff87;
+  --color-pl-ink: #0d0d0d;
+}
+
+@layer base {
+  body {
+    @apply bg-pl-ink text-white antialiased;
+  }
+}
+
+.pl-gradient {
+  background: linear-gradient(135deg, #38003c 0%, #1a0020 55%, #0a0010 100%);
+}
+
+.glass {
+  @apply bg-white/5 backdrop-blur-md border border-white/10;
+}

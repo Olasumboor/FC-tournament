@@ -1,0 +1,127 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Information about the user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique ID of the user." },
+        "displayName": { "type": "string", "description": "The display name of the user." },
+        "email": { "type": "string", "description": "The email address of the user." },
+        "photoURL": { "type": "string", "description": "The profile picture URL of the user." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the profile was created." },
+        "budget": { "type": "integer", "description": "Current budget in millions." },
+        "role": { "type": "string", "enum": ["admin", "user"] }
+      },
+      "required": ["uid", "email"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "A player in the league.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the player." },
+        "name": { "type": "string", "description": "Name of the player." },
+        "club": { "type": "string", "description": "Club name." },
+        "ownerUid": { "type": "string", "description": "UID of the user who owns this player." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "value": { "type": "integer", "description": "Current market value in millions." },
+        "bio": { "type": "string" }
+      },
+      "required": ["name", "ownerUid"]
+    },
+    "Auction": {
+      "title": "Auction",
+      "description": "A player auction.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "playerId": { "type": "string" },
+        "playerName": { "type": "string" },
+        "sellerUid": { "type": "string" },
+        "currentBid": { "type": "integer" },
+        "highestBidderUid": { "type": "string" },
+        "highestBidderName": { "type": "string" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["active", "completed", "cancelled"] }
+      },
+      "required": ["playerId", "sellerUid", "currentBid", "endTime", "status"]
+    },
+    "Fixture": {
+      "title": "Fixture",
+      "description": "A match fixture.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID of the fixture." },
+        "matchday": { "type": "integer" },
+        "homeId": { "type": "string" },
+        "awayId": { "type": "string" },
+        "homeName": { "type": "string" },
+        "awayName": { "type": "string" },
+        "homeScore": { "type": "integer" },
+        "awayScore": { "type": "integer" },
+        "status": { "type": "string", "enum": ["pending", "played", "overdue"] },
+        "deadline": { "type": "string" },
+        "competition": { "type": "string", "enum": ["league", "uefa"] },
+        "ownerUid": { "type": "string", "description": "UID of the user who owns this fixture." }
+      },
+      "required": ["matchday", "homeId", "awayId", "ownerUid"]
+    },
+    "News": {
+      "title": "News",
+      "description": "A news article or match report.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["title", "content", "authorUid", "createdAt"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "A comment on a fixture.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fixtureId": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fixtureId", "authorUid", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "UserProfile",
+      "description": "User profiles."
+    },
+    "/players/{playerId}": {
+      "schema": "Player",
+      "description": "Players in the league."
+    },
+    "/fixtures/{fixtureId}": {
+      "schema": "Fixture",
+      "description": "Match fixtures."
+    },
+    "/auctions/{auctionId}": {
+      "schema": "Auction",
+      "description": "Active auctions."
+    },
+    "/news/{newsId}": {
+      "schema": "News",
+      "description": "News articles."
+    },
+    "/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "Comments on fixtures."
+    }
+  }
+}

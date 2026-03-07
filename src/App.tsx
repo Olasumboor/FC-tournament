@@ -1,0 +1,2675 @@
+import React, { useState, useEffect, useMemo, Component, ErrorInfo, ReactNode } from 'react';
+import { GoogleGenAI } from "@google/genai";
+import { 
+  Trophy, 
+  Calendar, 
+  Users, 
+  MessageSquare, 
+  ShieldCheck, 
+  Plus, 
+  Trash2, 
+  Edit3,
+  ChevronRight,
+  CheckCircle2,
+  AlertCircle,
+  Share2,
+  Swords,
+  LogOut,
+  LogIn,
+  User as UserIcon,
+  Newspaper,
+  MessageCircle,
+  Send
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  auth, 
+  db, 
+  loginWithGoogle, 
+  loginWithEmail,
+  registerWithEmail,
+  updateAuthProfile,
+  logout, 
+  handleFirestoreError, 
+  OperationType 
+} from './firebase';
+import { 
+  onAuthStateChanged, 
+  User 
+} from 'firebase/auth';
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  serverTimestamp,
+  setDoc,
+  getDoc,
+  getDocs,
+  writeBatch
+} from 'firebase/firestore';
+
+type Player = {
+  id: string;
+  name: string;
+  club: string;
+  ownerUid: string;
+  bio?: string;
+};
+
+type Fixture = {
+  id: string;
+  matchday: number;
+  homeId: string;
+  awayId: string;
+  homeName: string;
+  awayName: string;
+  homeScore: number | null;
+  awayScore: number | null;
+  status: 'pending' | 'played' | 'overdue';
+  deadline: string;
+  competition: 'league' | 'uefa';
+  ownerUid: string;
+};
+
+type PreRegisteredPsn = {
+  id: string;
+  psnId: string;
+  claimed: boolean;
+  role: 'admin' | 'user';
+};
+
+type Tab = 'table' | 'fixtures' | 'players' | 'h2h' | 'rules' | 'uefa' | 'admin' | 'market' | 'news';
+
+type News = {
+  id: string;
+  title: string;
+  content: string;
+  authorUid: string;
+  authorName: string;
+  createdAt: any;
+  imageUrl?: string;
+};
+
+type Comment = {
+  id: string;
+  fixtureId: string;
+  authorUid: string;
+  authorName: string;
+  authorPhoto?: string;
+  text: string;
+  createdAt: any;
+};
+
+type Auction = {
+  id: string;
+  playerId: string;
+  playerName: string;
+  sellerUid: string;
+  currentBid: number;
+  highestBidderUid?: string;
+  highestBidderName?: string;
+  endTime: string;
+  status: 'active' | 'completed' | 'cancelled';
+};
+
+type TableRow = {
+  id: string;
+  name: string;
+  club: string;
+  p: number;
+  w: number;
+  d: number;
+  l: number;
+  gf: number;
+  ga: number;
+  pts: number;
+  form: string[];
+};
+
+// Error Boundary Component
+class ErrorBoundary extends React.Component<any, any> {
+  state = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-pl-ink text-white p-6 text-center">
+          <div className="glass p-8 rounded-2xl max-w-md w-full border-l-4 border-red-500">
+            <AlertCircle className="mx-auto text-red-500 mb-4" size={48} />
+            <h1 className="text-2xl font-display mb-2 uppercase tracking-wider">Something went wrong</h1>
+            <p className="text-white/60 font-condensed mb-6 uppercase tracking-widest text-xs">
+              {this.state.error?.message || "An unexpected error occurred"}
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="bg-pl-cyan text-pl-ink px-6 py-2 rounded-full font-condensed font-bold uppercase tracking-widest hover:scale-105 transition-transform"
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <LeagueApp />
+    </ErrorBoundary>
+  );
+}
+
+function LeagueApp() {
+  const [user, setUser] = useState<User | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>('table');
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [fixtures, setFixtures] = useState<Fixture[]>([]);
+  const [uefaFixtures, setUefaFixtures] = useState<Fixture[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [selectedFixture, setSelectedFixture] = useState<Fixture | null>(null);
+  const [h2hPlayers, setH2hPlayers] = useState({ p1: '', p2: '' });
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [scores, setScores] = useState({ home: 0, away: 0 });
+  const [bulkText, setBulkText] = useState('');
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [selectedUserUid, setSelectedUserUid] = useState<string | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
+  const [showPlayerModal, setShowPlayerModal] = useState(false);
+  const [playerBio, setPlayerBio] = useState('');
+  const [auctions, setAuctions] = useState<Auction[]>([]);
+  const [userBudget, setUserBudget] = useState<number>(100);
+  const [showAuctionModal, setShowAuctionModal] = useState(false);
+  const [auctionPlayer, setAuctionPlayer] = useState<Player | null>(null);
+  const [bidAmount, setBidAmount] = useState<number>(0);
+  const [allPlayers, setAllPlayers] = useState<Player[]>([]);
+  const [allFixtures, setAllFixtures] = useState<Fixture[]>([]);
+  const [news, setNews] = useState<News[]>([]);
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [newNews, setNewNews] = useState({ title: '', content: '', imageUrl: '' });
+  const [editingNews, setEditingNews] = useState<News | null>(null);
+  const [newComment, setNewComment] = useState('');
+  const [showNewsModal, setShowNewsModal] = useState(false);
+  const [bulkResultsText, setBulkResultsText] = useState('');
+  const [preRegisteredPsns, setPreRegisteredPsns] = useState<PreRegisteredPsn[]>([]);
+  const [newPsnId, setNewPsnId] = useState('');
+  const [loginForm, setLoginForm] = useState({ psnId: '', password: '', isRegistering: false });
+  const [authError, setAuthError] = useState('');
+  const [isAdminLoginMode, setIsAdminLoginMode] = useState(false);
+
+  const getPlayerForm = (playerId: string) => {
+    const playerFixtures = [...fixtures, ...uefaFixtures]
+      .filter(f => (f.homeId === playerId || f.awayId === playerId) && f.status === 'played')
+      .sort((a, b) => {
+        // Sort by matchday descending
+        return b.matchday - a.matchday;
+      })
+      .slice(0, 5);
+
+    return playerFixtures.map(f => {
+      const isHome = f.homeId === playerId;
+      const myScore = isHome ? f.homeScore! : f.awayScore!;
+      const oppScore = isHome ? f.awayScore! : f.homeScore!;
+      if (myScore > oppScore) return 'W';
+      if (myScore < oppScore) return 'L';
+      return 'D';
+    });
+  };
+
+  const h2hData = useMemo(() => {
+    if (!h2hPlayers.p1 || !h2hPlayers.p2 || h2hPlayers.p1 === h2hPlayers.p2) return null;
+    const matches = fixtures.filter(f => 
+      (f.homeId === h2hPlayers.p1 && f.awayId === h2hPlayers.p2) ||
+      (f.homeId === h2hPlayers.p2 && f.awayId === h2hPlayers.p1)
+    );
+    const played = matches.filter(f => f.status === 'played');
+    let p1w = 0, p2w = 0, draws = 0, p1g = 0, p2g = 0;
+    played.forEach(f => {
+      const isP1Home = f.homeId === h2hPlayers.p1;
+      const p1Goals = isP1Home ? f.homeScore! : f.awayScore!;
+      const p2Goals = isP1Home ? f.awayScore! : f.homeScore!;
+      p1g += p1Goals;
+      p2g += p2Goals;
+      if (p1Goals > p2Goals) p1w++;
+      else if (p2Goals > p1Goals) p2w++;
+      else draws++;
+    });
+    const sortedMatches = [...matches].sort((a, b) => {
+      if (a.matchday !== b.matchday) return a.matchday - b.matchday;
+      return a.deadline.localeCompare(b.deadline);
+    });
+    return { matches: sortedMatches, p1w, p2w, draws, p1g, p2g };
+  }, [h2hPlayers, fixtures]);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      if (currentUser) {
+        // Save user profile
+        const userRef = doc(db, 'users', currentUser.uid);
+        const userSnap = await getDoc(userRef);
+        
+        let role = 'user';
+        if (userSnap.exists()) {
+          role = userSnap.data().role || 'user';
+        }
+        
+        // Hardcoded admin for the provided email
+        if (currentUser.email === 'olaniyantoheebola@gmail.com') {
+          role = 'admin';
+        }
+        
+        setIsAdmin(role === 'admin');
+        setSelectedUserUid(currentUser.uid);
+
+        setDoc(userRef, {
+          uid: currentUser.uid,
+          displayName: currentUser.displayName,
+          email: currentUser.email,
+          photoURL: currentUser.photoURL,
+          role: role,
+          budget: userSnap.exists() ? (userSnap.data().budget ?? 100) : 100,
+          createdAt: serverTimestamp()
+        }, { merge: true }).catch(err => console.error("Failed to save user profile", err));
+      } else {
+        setIsAdmin(false);
+        setSelectedUserUid(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (isAdmin) {
+      const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+        setAllUsers(snapshot.docs.map(doc => doc.data()));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
+      return () => unsubUsers();
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAuthReady) return;
+    const unsubPreReg = onSnapshot(collection(db, 'preRegisteredPsns'), (snapshot) => {
+      setPreRegisteredPsns(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PreRegisteredPsn)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'preRegisteredPsns'));
+    return () => unsubPreReg();
+  }, [isAuthReady]);
+
+  useEffect(() => {
+    if (!isAuthReady || !user || !selectedUserUid) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const playersQuery = query(collection(db, 'players'), where('ownerUid', '==', selectedUserUid));
+    const fixturesQuery = query(collection(db, 'fixtures'), where('ownerUid', '==', selectedUserUid));
+
+    const unsubPlayers = onSnapshot(playersQuery, (snapshot) => {
+      const pData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Player));
+      setPlayers(pData);
+      setLoading(false);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'players'));
+
+    const unsubFixtures = onSnapshot(fixturesQuery, (snapshot) => {
+      const fData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fixture));
+      setFixtures(fData.filter(f => f.competition === 'league'));
+      setUefaFixtures(fData.filter(f => f.competition === 'uefa'));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'fixtures'));
+
+    const unsubAllPlayers = onSnapshot(collection(db, 'players'), (snapshot) => {
+      setAllPlayers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Player)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'players'));
+
+    const unsubAllFixtures = onSnapshot(collection(db, 'fixtures'), (snapshot) => {
+      setAllFixtures(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fixture)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'fixtures'));
+
+    const unsubAuctions = onSnapshot(collection(db, 'auctions'), (snapshot) => {
+      setAuctions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Auction)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'auctions'));
+
+    const unsubBudget = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+      if (doc.exists()) {
+        setUserBudget(doc.data().budget ?? 100);
+      }
+    });
+
+    const unsubNews = onSnapshot(collection(db, 'news'), (snapshot) => {
+      setNews(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as News)).sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'news'));
+
+    const unsubComments = onSnapshot(collection(db, 'comments'), (snapshot) => {
+      setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)).sort((a, b) => a.createdAt?.seconds - b.createdAt?.seconds));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'comments'));
+
+    return () => {
+      unsubPlayers();
+      unsubFixtures();
+      unsubAllPlayers();
+      unsubAllFixtures();
+      unsubAuctions();
+      unsubBudget();
+      unsubNews();
+      unsubComments();
+    };
+  }, [isAuthReady, user, selectedUserUid]);
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const { psnId, password, isRegistering } = loginForm;
+    const email = `${psnId.toLowerCase().trim()}@shatta.league`;
+
+    try {
+      const preReg = preRegisteredPsns.find(p => p.psnId.toLowerCase() === psnId.toLowerCase().trim());
+      
+      if (!preReg) {
+        setAuthError("This PSN ID is not pre-registered. Please contact an Admin.");
+        return;
+      }
+
+      if (isRegistering) {
+        if (preReg.claimed) {
+          setAuthError("This PSN ID has already been registered. Please login instead.");
+          return;
+        }
+        const userCred = await registerWithEmail(email, password);
+        await updateAuthProfile(psnId);
+        
+        // Create user document with role from pre-registration
+        await setDoc(doc(db, 'users', userCred.user.uid), {
+          uid: userCred.user.uid,
+          displayName: psnId,
+          email: email,
+          role: preReg.role || 'user',
+          budget: 100,
+          createdAt: serverTimestamp()
+        });
+
+        await updateDoc(doc(db, 'preRegisteredPsns', preReg.id), { claimed: true });
+        showToast("Registration successful!");
+      } else {
+        await loginWithEmail(email, password);
+        showToast("Welcome back!");
+      }
+    } catch (err: any) {
+      console.error("Auth error", err);
+      if (err.code === 'auth/operation-not-allowed') {
+        setAuthError("Sign-in methods are not enabled in Firebase. Please enable 'Email/Password' and 'Google' in your Firebase Console Authentication tab.");
+      } else {
+        setAuthError(err.message || "Authentication failed");
+      }
+    }
+  };
+
+  const addPreRegPsn = async () => {
+    if (!isAdmin || !newPsnId.trim()) return;
+    try {
+      await addDoc(collection(db, 'preRegisteredPsns'), {
+        psnId: newPsnId.trim(),
+        claimed: false,
+        role: 'user'
+      });
+      setNewPsnId('');
+      showToast("PSN ID pre-registered!");
+    } catch (err) {
+      console.error("Pre-reg failed", err);
+      showToast("Failed to pre-register", 'error');
+    }
+  };
+
+  const deletePreRegPsn = async (id: string) => {
+    if (!isAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'preRegisteredPsns', id));
+      showToast("Pre-registration removed");
+    } catch (err) {
+      console.error("Delete pre-reg failed", err);
+    }
+  };
+
+  const syncPlayersToPreReg = async () => {
+    if (!isAdmin) return;
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      let count = 0;
+      
+      allPlayers.forEach(player => {
+        const exists = preRegisteredPsns.some(p => p.psnId.toLowerCase() === player.name.toLowerCase().trim());
+        if (!exists) {
+          const newRef = doc(collection(db, 'preRegisteredPsns'));
+          batch.set(newRef, {
+            psnId: player.name.trim(),
+            claimed: false,
+            role: 'user'
+          });
+          count++;
+        }
+      });
+
+      if (count > 0) {
+        await batch.commit();
+        showToast(`Synced ${count} players to whitelist!`);
+      } else {
+        showToast("All players are already whitelisted");
+      }
+    } catch (err) {
+      console.error("Sync failed", err);
+      showToast("Sync failed", 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateSeason = async () => {
+    if (!isAdmin || !user) return;
+    try {
+      setLoading(true);
+      if (players.length < 2) throw new Error("Need at least 2 players to generate fixtures");
+
+      const batch = writeBatch(db);
+      
+      // Clear existing league fixtures
+      const existingFixtures = fixtures.filter(f => f.competition === 'league');
+      existingFixtures.forEach(f => {
+        batch.delete(doc(db, 'fixtures', f.id));
+      });
+
+      // Generate Round Robin
+      const playerIds = players.map(p => p.id);
+      const n = playerIds.length;
+      const rounds = n % 2 === 0 ? n - 1 : n;
+      const matchesPerRound = Math.floor(n / 2);
+
+      const today = new Date();
+      
+      for (let round = 0; round < rounds; round++) {
+        const deadline = new Date(today);
+        deadline.setDate(today.getDate() + (round + 1) * 7);
+        const deadlineStr = deadline.toISOString().split('T')[0];
+
+        for (let match = 0; match < matchesPerRound; match++) {
+          const homeIdx = (round + match) % (n - 1);
+          let awayIdx = (n - 1 - match + round) % (n - 1);
+
+          if (match === 0) awayIdx = n - 1;
+
+          const homeId = playerIds[homeIdx];
+          const awayId = playerIds[awayIdx];
+          const homePlayer = players.find(p => p.id === homeId)!;
+          const awayPlayer = players.find(p => p.id === awayId)!;
+
+          const fixtureRef = doc(collection(db, 'fixtures'));
+          batch.set(fixtureRef, {
+            matchday: round + 1,
+            homeId,
+            awayId,
+            homeName: homePlayer.name,
+            awayName: awayPlayer.name,
+            homeScore: null,
+            awayScore: null,
+            status: 'pending',
+            deadline: deadlineStr,
+            competition: 'league',
+            ownerUid: user.uid
+          });
+        }
+      }
+
+      await batch.commit();
+      showToast("Season generated successfully!");
+    } catch (err) {
+      console.error("Generation failed", err);
+      showToast(err instanceof Error ? err.message : "Generation failed", 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateUefaDraw = async (reset = false) => {
+    if (!isAdmin || !user) return;
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+
+      let playersToDraw: string[] = [];
+
+      if (reset) {
+        uefaFixtures.forEach(f => batch.delete(doc(db, 'fixtures', f.id)));
+        playersToDraw = players.map(p => p.id);
+      } else {
+        const latestRound = uefaFixtures.length > 0 ? Math.max(...uefaFixtures.map(f => f.matchday)) : 0;
+        
+        if (latestRound === 0) {
+          playersToDraw = players.map(p => p.id);
+        } else {
+          const currentRoundFixtures = uefaFixtures.filter(f => f.matchday === latestRound);
+          const pending = currentRoundFixtures.filter(f => f.status !== 'played');
+          if (pending.length > 0) throw new Error("Complete all current round matches first");
+
+          const winners = currentRoundFixtures.map(f => {
+            if (f.homeScore! > f.awayScore!) return f.homeId;
+            if (f.awayScore! > f.homeScore!) return f.awayId;
+            return null;
+          }).filter(id => id !== null) as string[];
+
+          playersToDraw = winners;
+          if (playersToDraw.length < 2) throw new Error("Tournament finished or not enough winners to proceed");
+        }
+      }
+
+      const nextRound = reset ? 1 : (uefaFixtures.length > 0 ? Math.max(...uefaFixtures.map(f => f.matchday)) + 1 : 1);
+      const shuffled = [...playersToDraw].sort(() => Math.random() - 0.5);
+      
+      const today = new Date();
+      const deadline = new Date(today);
+      deadline.setDate(today.getDate() + 7);
+      const deadlineStr = deadline.toISOString().split('T')[0];
+
+      for (let i = 0; i < shuffled.length; i += 2) {
+        const homeId = shuffled[i];
+        const homePlayer = players.find(p => p.id === homeId)!;
+        const fixtureRef = doc(collection(db, 'fixtures'));
+
+        if (shuffled[i+1]) {
+          const awayId = shuffled[i+1];
+          const awayPlayer = players.find(p => p.id === awayId)!;
+          batch.set(fixtureRef, {
+            matchday: nextRound,
+            homeId,
+            awayId,
+            homeName: homePlayer.name,
+            awayName: awayPlayer.name,
+            homeScore: null,
+            awayScore: null,
+            status: 'pending',
+            deadline: deadlineStr,
+            competition: 'uefa',
+            ownerUid: user.uid
+          });
+        } else {
+          // Bye
+          batch.set(fixtureRef, {
+            matchday: nextRound,
+            homeId,
+            awayId: homeId,
+            homeName: homePlayer.name,
+            awayName: homePlayer.name,
+            homeScore: 1,
+            awayScore: 0,
+            status: 'played',
+            deadline: deadlineStr,
+            competition: 'uefa',
+            ownerUid: user.uid
+          });
+        }
+      }
+
+      await batch.commit();
+      showToast(reset ? "UEFA Tournament Reset!" : "Next Round Drawn!");
+    } catch (err) {
+      console.error("Draw failed", err);
+      showToast(err instanceof Error ? err.message : "Draw failed", 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addPlayer = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!user) return;
+    const formData = new FormData(e.currentTarget);
+    const name = formData.get('name') as string;
+    const club = formData.get('club') as string;
+
+    try {
+      await addDoc(collection(db, 'players'), {
+        name,
+        club,
+        ownerUid: user.uid,
+        createdAt: serverTimestamp()
+      });
+      (e.target as HTMLFormElement).reset();
+      showToast("Player added!");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'players');
+    }
+  };
+
+  const deletePlayer = async (id: string) => {
+    if (!user) return;
+    const isOwner = players.some(p => p.id === id);
+    if (!isOwner && !isAdmin) return;
+    
+    if (isAdmin && !window.confirm("Are you sure you want to delete this player? This will also affect their fixtures.")) return;
+    
+    try {
+      await deleteDoc(doc(db, 'players', id));
+      showToast("Player removed");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'players');
+    }
+  };
+
+  const updatePlayerBio = async () => {
+    if (!selectedPlayer || !user) return;
+    try {
+      const playerRef = doc(db, 'players', selectedPlayer.id);
+      await updateDoc(playerRef, { bio: playerBio });
+      showToast("Profile updated!");
+      setShowPlayerModal(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `players/${selectedPlayer.id}`);
+    }
+  };
+
+  const startAuction = async (player: Player, startingBid: number) => {
+    if (!user) return;
+    try {
+      const auctionRef = doc(collection(db, 'auctions'));
+      const endTime = new Date();
+      endTime.setHours(endTime.getHours() + 24); // 24 hour auction
+
+      await setDoc(auctionRef, {
+        id: auctionRef.id,
+        playerId: player.id,
+        playerName: player.name,
+        sellerUid: user.uid,
+        currentBid: startingBid,
+        endTime: endTime.toISOString(),
+        status: 'active'
+      });
+      showToast("Auction started!");
+      setShowAuctionModal(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'auctions');
+    }
+  };
+
+  const placeBid = async (auction: Auction, amount: number) => {
+    if (!user) return;
+    if (auction.sellerUid === user?.uid) {
+      showToast("You cannot bid on your own player", "error");
+      return;
+    }
+
+    if (amount <= auction.currentBid) {
+      showToast("Bid must be higher than current bid", 'error');
+      return;
+    }
+    if (amount > userBudget) {
+      showToast("Insufficient budget", 'error');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'auctions', auction.id), {
+        currentBid: amount,
+        highestBidderUid: user.uid,
+        highestBidderName: user.displayName || 'Anonymous'
+      });
+      showToast("Bid placed!");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `auctions/${auction.id}`);
+    }
+  };
+
+  const completeAuction = async (auction: Auction) => {
+    if (!user) return;
+    if (auction.status !== 'active') return;
+
+    try {
+      const batch = writeBatch(db);
+      
+      if (auction.highestBidderUid) {
+        // Transfer player
+        batch.update(doc(db, 'players', auction.playerId), {
+          ownerUid: auction.highestBidderUid,
+          value: auction.currentBid
+        });
+
+        // Update buyer budget
+        const buyerRef = doc(db, 'users', auction.highestBidderUid);
+        const buyerSnap = await getDoc(buyerRef);
+        if (buyerSnap.exists()) {
+          batch.update(buyerRef, {
+            budget: (buyerSnap.data().budget || 100) - auction.currentBid
+          });
+        }
+
+        // Update seller budget
+        const sellerRef = doc(db, 'users', auction.sellerUid);
+        const sellerSnap = await getDoc(sellerRef);
+        if (sellerSnap.exists()) {
+          batch.update(sellerRef, {
+            budget: (sellerSnap.data().budget || 100) + auction.currentBid
+          });
+        }
+      }
+
+      batch.update(doc(db, 'auctions', auction.id), { status: 'completed' });
+      await batch.commit();
+      showToast("Auction completed!");
+    } catch (err) {
+      console.error("Failed to complete auction", err);
+      showToast("Failed to complete auction", 'error');
+    }
+  };
+
+  const addNews = async () => {
+    if (!isAdmin || !newNews.title || !newNews.content) return;
+    try {
+      await addDoc(collection(db, 'news'), {
+        ...newNews,
+        authorUid: user?.uid,
+        authorName: user?.displayName,
+        createdAt: serverTimestamp()
+      });
+      setNewNews({ title: '', content: '', imageUrl: '' });
+      setShowNewsModal(false);
+      showToast("News posted!");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'news');
+    }
+  };
+
+  const updateNews = async () => {
+    if (!isAdmin || !editingNews) return;
+    try {
+      await updateDoc(doc(db, 'news', editingNews.id), {
+        title: newNews.title,
+        content: newNews.content,
+        imageUrl: newNews.imageUrl
+      });
+      setEditingNews(null);
+      setNewNews({ title: '', content: '', imageUrl: '' });
+      setShowNewsModal(false);
+      showToast("News updated!");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `news/${editingNews.id}`);
+    }
+  };
+
+  const deleteNews = async (id: string) => {
+    if (!isAdmin) return;
+    if (!window.confirm("Delete this article?")) return;
+    try {
+      await deleteDoc(doc(db, 'news', id));
+      showToast("News deleted");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `news/${id}`);
+    }
+  };
+
+  const addComment = async (fixtureId: string) => {
+    if (!newComment.trim() || !user) return;
+    try {
+      await addDoc(collection(db, 'comments'), {
+        fixtureId,
+        text: newComment,
+        authorUid: user.uid,
+        authorName: user.displayName,
+        authorPhoto: user.photoURL,
+        createdAt: serverTimestamp()
+      });
+      setNewComment('');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'comments');
+    }
+  };
+
+  const deleteComment = async (id: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'comments', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `comments/${id}`);
+    }
+  };
+
+  const shareToWhatsApp = (fixture: Fixture) => {
+    if (fixture.status !== 'played') return;
+    const message = `${fixture.homeName} just humbled ${fixture.awayName} ${fixture.homeScore}-${fixture.awayScore}! 🏆 SHATTA MOVEMENT LEAGUE`;
+    const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank');
+  };
+
+  const toggleAdmin = async (targetUser: any) => {
+    if (!isAdmin || targetUser.uid === user?.uid) return;
+    try {
+      const newRole = targetUser.role === 'admin' ? 'user' : 'admin';
+      await updateDoc(doc(db, 'users', targetUser.uid), { role: newRole });
+      showToast(`Updated ${targetUser.displayName || targetUser.email} to ${newRole}`);
+    } catch (err) {
+      console.error("Failed to toggle admin", err);
+      showToast("Failed to update role", 'error');
+    }
+  };
+
+  const resetLeague = async () => {
+    if (!isAdmin || !window.confirm("WARNING: This will delete ALL fixtures and results. Proceed?")) return;
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      fixtures.forEach(f => batch.delete(doc(db, 'fixtures', f.id)));
+      uefaFixtures.forEach(f => batch.delete(doc(db, 'fixtures', f.id)));
+      await batch.commit();
+      showToast("League reset successfully");
+    } catch (err) {
+      console.error("Reset failed", err);
+      showToast("Reset failed", 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const bulkUploadResults = async () => {
+    if (!isAdmin || !bulkResultsText.trim()) return;
+    try {
+      const lines = bulkResultsText.split('\n').map(l => l.trim()).filter(l => l !== '');
+      const batch = writeBatch(db);
+      let count = 0;
+
+      lines.forEach(line => {
+        // Regex to match "Team Name 1-2 Other Team" or "Team Name 1 - 2 Other Team"
+        const match = line.match(/^(.+?)\s+(\d+)\s*-\s*(\d+)\s+(.+)$/i);
+        if (match) {
+          const [, homeName, homeScore, awayScore, awayName] = match;
+          const fixture = fixtures.find(f => 
+            f.homeName.toLowerCase() === homeName.toLowerCase() && 
+            f.awayName.toLowerCase() === awayName.toLowerCase() &&
+            f.status !== 'played'
+          );
+          if (fixture) {
+            batch.update(doc(db, 'fixtures', fixture.id), {
+              homeScore: parseInt(homeScore),
+              awayScore: parseInt(awayScore),
+              status: 'played'
+            });
+            // Auto-generate match report in background
+            generateMatchReport(fixture, parseInt(homeScore), parseInt(awayScore));
+            count++;
+          }
+        }
+      });
+
+      if (count === 0) {
+        showToast("No matching pending fixtures found", 'error');
+        return;
+      }
+
+      await batch.commit();
+      setBulkResultsText('');
+      showToast(`Successfully updated ${count} results!`);
+    } catch (err) {
+      console.error("Bulk upload failed", err);
+      showToast("Bulk upload failed", 'error');
+    }
+  };
+
+  const generateMatchReport = async (fixture: Fixture, homeScore: number, awayScore: number) => {
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const model = ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Generate a funny, roast-style match report for a FIFA league.
+        Match: ${fixture.homeName} vs ${fixture.awayName}
+        Score: ${homeScore} - ${awayScore}
+        
+        The report should have a catchy title and a short, hilarious summary that roasts the loser and praises the winner (or roasts both if it's a boring draw). Use slang and banter common in football communities. Keep it under 150 words.
+        Return the result as a JSON object with "title" and "content" fields.`,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const result = await model;
+      const report = JSON.parse(result.text);
+
+      await addDoc(collection(db, 'news'), {
+        title: report.title,
+        content: report.content,
+        authorUid: 'system',
+        authorName: 'League Reporter',
+        createdAt: serverTimestamp(),
+        imageUrl: `https://picsum.photos/seed/${fixture.id}/800/450`
+      });
+    } catch (err) {
+      console.error("Failed to generate match report", err);
+    }
+  };
+
+  const submitScore = async () => {
+    if (!selectedFixture || !user) return;
+    try {
+      await updateDoc(doc(db, 'fixtures', selectedFixture.id), {
+        homeScore: scores.home,
+        awayScore: scores.away,
+        status: 'played'
+      });
+      
+      // Auto-generate match report
+      generateMatchReport(selectedFixture, scores.home, scores.away);
+      
+      setShowModal(false);
+      showToast("Score updated!");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'fixtures');
+    }
+  };
+
+  const addBulkPlayers = async () => {
+    if (!bulkText.trim() || !user) return;
+    try {
+      const names = bulkText.split('\n').map(n => n.trim()).filter(n => n !== '');
+      const batch = writeBatch(db);
+      names.forEach(name => {
+        const newPlayerRef = doc(collection(db, 'players'));
+        batch.set(newPlayerRef, {
+          name,
+          club: 'TBD',
+          ownerUid: user.uid,
+          createdAt: serverTimestamp()
+        });
+      });
+      await batch.commit();
+      setBulkText('');
+      showToast(`Imported ${names.length} players!`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'players');
+    }
+  };
+
+  const clearAllPlayers = async () => {
+    if (!user || !window.confirm("Are you sure you want to clear ALL players and their fixtures?")) return;
+    try {
+      const batch = writeBatch(db);
+      players.forEach(p => batch.delete(doc(db, 'players', p.id)));
+      fixtures.forEach(f => batch.delete(doc(db, 'fixtures', f.id)));
+      uefaFixtures.forEach(f => batch.delete(doc(db, 'fixtures', f.id)));
+      await batch.commit();
+      showToast("All data cleared");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'players');
+    }
+  };
+
+  const shareTable = () => {
+    const text = `🏆 SHATTA MOVEMENT LEAGUE Standings\n\n` + 
+      tableData.map((p, i) => `${i+1}. ${p.name} - ${p.pts}pts (${p.w}W ${p.d}D ${p.l}L)`).join('\n');
+    navigator.clipboard.writeText(text);
+    showToast("Table copied to clipboard!");
+  };
+
+  const tableData = useMemo<TableRow[]>(() => {
+    const stats: Record<string, TableRow> = {};
+    allPlayers.forEach(p => {
+      stats[p.id] = { 
+        id: p.id, 
+        name: p.name, 
+        club: p.club,
+        p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, pts: 0,
+        form: [] 
+      };
+    });
+
+    allFixtures.filter(f => f.competition === 'league' && f.status === 'played').forEach(f => {
+      const h = stats[f.homeId];
+      const a = stats[f.awayId];
+      if (!h || !a) return;
+
+      h.p++; a.p++;
+      h.gf += f.homeScore || 0; h.ga += f.awayScore || 0;
+      a.gf += f.awayScore || 0; a.ga += f.homeScore || 0;
+
+      if ((f.homeScore || 0) > (f.awayScore || 0)) {
+        h.w++; h.pts += 3; a.l++;
+        h.form.unshift('W'); a.form.unshift('L');
+      } else if ((f.homeScore || 0) < (f.awayScore || 0)) {
+        a.w++; a.pts += 3; h.l++;
+        h.form.unshift('L'); a.form.unshift('W');
+      } else {
+        h.d++; h.pts += 1; a.d++; a.pts += 1;
+        h.form.unshift('D'); a.form.unshift('D');
+      }
+    });
+
+    return Object.values(stats).map(p => ({
+      ...p,
+      form: p.form.slice(0, 5)
+    })).sort((a, b) => 
+      b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga) || b.gf - a.gf || a.name.localeCompare(b.name)
+    );
+  }, [allPlayers, allFixtures]);
+
+  if (loading || !isAuthReady) return <div className="flex items-center justify-center h-screen font-display text-2xl animate-pulse">LOADING...</div>;
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-pl-ink text-white flex items-center justify-center p-6 font-sans">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="glass p-10 rounded-3xl w-full max-w-md border border-white/5 shadow-2xl relative overflow-hidden"
+        >
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-pl-cyan via-pl-pink to-pl-purple" />
+          
+          <div className="text-center mb-10">
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-white/5 rounded-2xl mb-6 border border-white/10">
+              <Trophy className="text-pl-cyan" size={40} />
+            </div>
+            <h1 className="font-display text-4xl uppercase tracking-wider mb-2">Shatta <span className="text-pl-cyan">League</span></h1>
+            <p className="text-white/40 font-condensed uppercase tracking-widest text-xs">Season 2025/26 • {isAdminLoginMode ? 'Admin Portal' : 'Player Portal'}</p>
+          </div>
+
+          {!isAdminLoginMode ? (
+            <form onSubmit={handleAuth} className="space-y-6">
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">PSN ID (Username)</label>
+                <div className="relative">
+                  <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
+                  <input 
+                    type="text"
+                    required
+                    value={loginForm.psnId}
+                    onChange={(e) => setLoginForm({ ...loginForm, psnId: e.target.value })}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-4 text-sm focus:border-pl-cyan outline-none transition-all placeholder:text-white/10"
+                    placeholder="Enter your PSN ID"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Password</label>
+                <div className="relative">
+                  <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
+                  <input 
+                    type="password"
+                    required
+                    value={loginForm.password}
+                    onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-4 text-sm focus:border-pl-cyan outline-none transition-all placeholder:text-white/10"
+                    placeholder="••••••••"
+                  />
+                </div>
+              </div>
+
+              {authError && (
+                <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl flex items-start gap-3">
+                  <AlertCircle className="text-red-500 shrink-0" size={16} />
+                  <p className="text-[10px] text-red-500 uppercase tracking-wider leading-relaxed">{authError}</p>
+                </div>
+              )}
+
+              <button 
+                type="submit"
+                className="w-full bg-pl-cyan text-pl-ink py-5 rounded-xl font-display text-sm uppercase tracking-widest hover:brightness-110 transition-all shadow-[0_0_20px_rgba(0,255,249,0.3)]"
+              >
+                {loginForm.isRegistering ? 'Create Account' : 'Sign In'}
+              </button>
+            </form>
+          ) : (
+            <div className="space-y-6">
+              <button 
+                onClick={loginWithGoogle}
+                className="w-full bg-white text-pl-ink py-5 rounded-xl font-display text-sm uppercase tracking-widest flex items-center justify-center gap-4 hover:bg-white/90 transition-all shadow-xl"
+              >
+                <img src="https://www.google.com/favicon.ico" alt="" className="w-5 h-5" />
+                Sign in with Google
+              </button>
+              <p className="text-[10px] text-center text-white/40 uppercase tracking-widest leading-relaxed">
+                Google login is reserved for <span className="text-pl-cyan">League Administrators</span>.
+              </p>
+            </div>
+          )}
+
+          <div className="mt-8 pt-8 border-t border-white/5 flex flex-col gap-4 text-center">
+            {!isAdminLoginMode && (
+              <button 
+                onClick={() => setLoginForm({ ...loginForm, isRegistering: !loginForm.isRegistering })}
+                className="text-[10px] font-condensed text-white/40 uppercase tracking-widest hover:text-pl-cyan transition-colors"
+              >
+                {loginForm.isRegistering ? 'Already have an account? Sign In' : 'First time? Create your password'}
+              </button>
+            )}
+            
+            <button 
+              onClick={() => setIsAdminLoginMode(!isAdminLoginMode)}
+              className="text-[10px] font-condensed text-pl-cyan/60 uppercase tracking-widest hover:text-pl-cyan transition-colors flex items-center justify-center gap-2"
+            >
+              {isAdminLoginMode ? (
+                <>
+                  <UserIcon size={12} />
+                  Back to Player Login
+                </>
+              ) : (
+                <>
+                  <ShieldCheck size={12} />
+                  Admin Portal
+                </>
+              )}
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      {/* Hero Section */}
+      <header className="pl-gradient border-b-4 border-pl-pink relative overflow-hidden">
+        <div className="absolute inset-0 opacity-10 pointer-events-none" 
+             style={{ backgroundImage: 'repeating-linear-gradient(-45deg, transparent, transparent 20px, white 20px, white 21px)' }} />
+        
+        <div className="max-w-5xl mx-auto px-6 py-12 text-center relative z-10">
+          <div className="flex justify-center items-center gap-4 mb-8">
+            <div className="flex items-center gap-3 glass px-4 py-2 rounded-full">
+              <img src={user.photoURL || ''} alt="" className="w-6 h-6 rounded-full border border-white/20" />
+              <span className="text-[10px] font-condensed font-bold text-white/60 uppercase tracking-widest">{user.displayName}</span>
+              <div className="w-px h-3 bg-white/10 mx-1" />
+              <span className="text-[10px] font-condensed font-bold text-pl-cyan uppercase tracking-widest">£{userBudget}M</span>
+              <button onClick={logout} className="text-white/20 hover:text-pl-pink transition-colors">
+                <LogOut size={14} />
+              </button>
+            </div>
+          </div>
+            <span className="bg-pl-pink text-white px-3 py-1 text-[10px] font-condensed font-bold tracking-[0.2em] uppercase rounded-sm">
+              ⚽ SHATTA MOVEMENT
+            </span>
+            <span className="border border-white/20 text-white/60 px-3 py-1 text-[10px] font-condensed font-bold tracking-[0.2em] uppercase rounded-sm">
+              Season 2025/26
+            </span>
+          
+          <h1 className="font-display text-6xl md:text-8xl font-bold uppercase leading-[0.9] tracking-tight mb-4">
+            SHATTA MOVEMENT <span className="text-pl-cyan">LEAGUE</span>
+          </h1>
+          
+          <div className="flex justify-center max-w-md mx-auto glass rounded-lg divide-x divide-white/10 mt-8">
+            <div className="flex-1 py-4">
+              <div className="font-display text-2xl text-pl-cyan leading-none">{players.length}</div>
+              <div className="font-condensed text-[10px] text-white/40 tracking-widest uppercase mt-1">Players</div>
+            </div>
+            <div className="flex-1 py-4">
+              <div className="font-display text-2xl text-pl-cyan leading-none">{fixtures.length + uefaFixtures.length}</div>
+              <div className="font-condensed text-[10px] text-white/40 tracking-widest uppercase mt-1">Fixtures</div>
+            </div>
+            <div className="flex-1 py-4">
+              <div className="font-display text-2xl text-pl-cyan leading-none">
+                {fixtures.filter(f => f.status === 'played').length + uefaFixtures.filter(f => f.status === 'played').length}
+              </div>
+              <div className="font-condensed text-[10px] text-white/40 tracking-widest uppercase mt-1">Played</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Navigation */}
+      <nav className="sticky top-0 z-50 bg-pl-ink/95 backdrop-blur-xl border-b border-white/5">
+        <div className="max-w-5xl mx-auto px-4 flex overflow-x-auto no-scrollbar">
+          {[
+            { id: 'table', icon: Trophy, label: 'Table', public: true },
+            { id: 'fixtures', icon: Calendar, label: 'Fixtures', public: true },
+            { id: 'h2h', icon: Swords, label: 'H2H', public: true },
+            { id: 'market', icon: MessageSquare, label: 'Market', public: true },
+            { id: 'news', icon: Newspaper, label: 'News', public: true },
+            { id: 'rules', icon: ShieldCheck, label: 'Rules', public: true },
+            { id: 'players', icon: Users, label: 'Squad', public: false },
+            { id: 'uefa', icon: Trophy, label: 'UEFA', public: false },
+            { id: 'admin', icon: ShieldCheck, label: 'Admin', public: false },
+          ].filter(t => isAdmin || t.public).map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as Tab)}
+              className={`flex items-center gap-2 px-6 py-4 font-condensed font-bold text-xs tracking-widest uppercase transition-all border-b-2 whitespace-nowrap ${
+                activeTab === tab.id 
+                  ? 'text-pl-cyan border-pl-cyan' 
+                  : 'text-white/40 border-transparent hover:text-white/70'
+              }`}
+            >
+              <tab.icon size={14} />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {isAdmin && selectedUserUid !== user?.uid && (
+        <div className="bg-pl-pink text-white py-2 px-4 text-center text-[10px] font-bold uppercase tracking-widest sticky top-[53px] z-40">
+          Viewing data for: {allUsers.find(u => u.uid === selectedUserUid)?.displayName || allUsers.find(u => u.uid === selectedUserUid)?.email}
+          <button 
+            onClick={() => setSelectedUserUid(user?.uid || null)}
+            className="ml-4 underline hover:no-underline"
+          >
+            Return to my account
+          </button>
+        </div>
+      )}
+
+      <main className="flex-grow max-w-5xl mx-auto w-full px-6 py-10">
+        <AnimatePresence mode="wait">
+          {activeTab === 'table' && (
+            <motion.div
+              key="table"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl uppercase tracking-wider flex items-center gap-3">
+                  League <span className="text-pl-pink">Table</span>
+                </h2>
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={shareTable}
+                    className="flex items-center gap-2 text-[10px] font-condensed font-bold text-pl-cyan uppercase tracking-widest hover:text-white transition-colors"
+                  >
+                    <Share2 size={12} /> Share Table
+                  </button>
+                  <div className="text-[10px] font-condensed font-bold text-white/40 uppercase tracking-widest">
+                    Live Standings
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-pl-purple/50 font-condensed text-[10px] text-white/40 uppercase tracking-widest">
+                        <th className="px-6 py-4 w-12 text-center">#</th>
+                        <th className="px-6 py-4">Player</th>
+                        <th className="px-4 py-4 text-center">P</th>
+                        <th className="px-4 py-4 text-center">W</th>
+                        <th className="px-4 py-4 text-center">D</th>
+                        <th className="px-4 py-4 text-center">L</th>
+                        <th className="px-4 py-4 text-center">GD</th>
+                        <th className="px-6 py-4 text-center text-pl-cyan">PTS</th>
+                        <th className="px-6 py-4 text-center">Form</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {tableData.map((row, i) => {
+                        const gd = row.gf - row.ga;
+                        const isCurrentUser = players.some(p => p.id === row.id);
+                        return (
+                          <tr key={row.id} className={`transition-colors group ${isCurrentUser ? 'bg-pl-cyan/10 border-l-4 border-pl-cyan' : 'hover:bg-white/5 border-l-4 border-transparent'}`}>
+                            <td className={`px-6 py-5 text-center font-display text-lg ${i < 3 ? 'text-pl-cyan' : 'text-white/40'}`}>
+                              {i + 1}
+                            </td>
+                            <td className="px-6 py-5">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded bg-pl-pink flex items-center justify-center font-display text-xl">
+                                  {row.name[0]}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <div className="font-bold text-sm">{row.name}</div>
+                                    {isCurrentUser && (
+                                      <span className="bg-pl-cyan text-pl-ink text-[8px] font-bold px-1.5 py-0.5 rounded uppercase tracking-tighter">YOU</span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] font-condensed text-white/40 uppercase tracking-wider">{row.club || 'No Club'}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-5 text-center font-display">{row.p}</td>
+                            <td className="px-4 py-5 text-center text-green-400 font-display">{row.w}</td>
+                            <td className="px-4 py-5 text-center text-white/40 font-display">{row.d}</td>
+                            <td className="px-4 py-5 text-center text-red-400 font-display">{row.l}</td>
+                            <td className={`px-4 py-5 text-center font-display ${gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : ''}`}>
+                              {gd > 0 ? '+' : ''}{gd}
+                            </td>
+                            <td className="px-6 py-5 text-center font-display text-xl text-pl-cyan">{row.pts}</td>
+                            <td className="px-6 py-5">
+                              <div className="flex gap-1 justify-center">
+                                {row.form.slice(-5).map((r: string, idx: number) => (
+                                  <div key={idx} className={`w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold ${
+                                    r === 'W' ? 'bg-green-500' : r === 'L' ? 'bg-red-500' : 'bg-white/20'
+                                  }`}>
+                                    {r}
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'uefa' && (
+            <motion.div
+              key="uefa"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-full bg-pl-cyan flex items-center justify-center text-pl-ink">
+                    <Trophy size={24} />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-2xl uppercase tracking-wider">
+                      UEFA <span className="text-pl-cyan">Ultimate</span> League
+                    </h2>
+                    <p className="text-[10px] font-condensed text-white/40 uppercase tracking-widest">Side Competition • Ultimate Teams</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => generateUefaDraw(true)}
+                    className="bg-white/5 text-white/40 px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+                  >
+                    Reset Tournament
+                  </button>
+                  <button 
+                    onClick={() => generateUefaDraw(false)}
+                    className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform flex items-center gap-2"
+                  >
+                    <Swords size={14} /> {uefaFixtures.length === 0 ? 'Initiate Draw' : 'Next Round'}
+                  </button>
+                </div>
+              </div>
+
+              {allFixtures.filter(f => f.competition === 'uefa').length === 0 ? (
+                <div className="text-center py-20 glass rounded-xl">
+                  <Trophy className="mx-auto text-white/10 mb-4" size={48} />
+                  <p className="text-white/40 font-condensed tracking-widest uppercase">No UEFA matches drawn yet</p>
+                </div>
+              ) : (
+                <div className="space-y-10">
+                  {Array.from(new Set(allFixtures.filter(f => f.competition === 'uefa').map(f => f.matchday))).sort((a, b) => (b as number) - (a as number)).map(md => (
+                    <div key={md} className="space-y-4">
+                      <div className="flex items-center gap-4">
+                        <div className="h-px flex-grow bg-white/10"></div>
+                        <h3 className="font-condensed font-bold text-xs uppercase tracking-[0.3em] text-pl-cyan">
+                          {md === 1 ? 'Opening Round' : 
+                           md === 2 ? 'Quarter Finals' : 
+                           md === 3 ? 'Semi Finals' : 
+                           'The Grand Final'}
+                        </h3>
+                        <div className="h-px flex-grow bg-white/10"></div>
+                      </div>
+                      
+                      <div className="grid gap-4">
+                        {allFixtures.filter(f => f.competition === 'uefa' && f.matchday === md).map(f => {
+                          const isMyMatch = players.some(p => p.id === f.homeId || p.id === f.awayId);
+                          return (
+                            <div 
+                              key={f.id}
+                              onClick={() => {
+                                if (!isAdmin && !isMyMatch) return;
+                                setSelectedFixture(f);
+                                setScores({ home: f.homeScore || 0, away: f.awayScore || 0 });
+                                setShowModal(true);
+                              }}
+                              className={`glass transition-all rounded-lg p-6 flex items-center justify-between group border-l-4 ${
+                                isMyMatch ? 'border-pl-cyan bg-pl-cyan/5' : 'border-white/10'
+                              } ${
+                                isAdmin || isMyMatch ? 'hover:bg-white/10 cursor-pointer' : 'cursor-default'
+                              } ${
+                                f.homeId === f.awayId ? 'opacity-50' : ''
+                              }`}
+                            >
+                              <div className={`flex-1 text-right font-bold pr-6 group-hover:text-pl-cyan transition-colors text-lg ${isMyMatch && players.some(p => p.id === f.homeId) ? 'text-pl-cyan' : ''}`}>
+                                {f.homeName}
+                              </div>
+                              
+                              {f.homeId === f.awayId ? (
+                                <div className="bg-pl-cyan/10 text-pl-cyan px-6 py-2 rounded-full font-condensed font-bold text-[10px] uppercase tracking-widest">
+                                  Bye - Advanced
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-6 bg-pl-ink/50 px-8 py-3 rounded-full border border-pl-cyan/20">
+                                  <div className="font-display text-3xl w-10 text-center text-pl-cyan">
+                                    {f.status === 'played' ? f.homeScore : '-'}
+                                  </div>
+                                  <div className="text-white/20 font-condensed text-xs uppercase tracking-[0.2em]">VS</div>
+                                  <div className="font-display text-3xl w-10 text-center text-pl-cyan">
+                                    {f.status === 'played' ? f.awayScore : '-'}
+                                  </div>
+                                </div>
+                              )}
+  
+                              <div className={`flex-1 text-left font-bold pl-6 group-hover:text-pl-cyan transition-colors text-lg ${isMyMatch && players.some(p => p.id === f.awayId) ? 'text-pl-cyan' : ''}`}>
+                                {f.homeId === f.awayId ? '' : f.awayName}
+                              </div>
+                              
+                              <div className="hidden md:flex flex-col items-end min-w-[120px] ml-6">
+                                <span className={`text-[10px] font-condensed font-bold uppercase tracking-widest px-3 py-1 rounded-full ${
+                                  f.status === 'played' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 
+                                  f.status === 'overdue' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' : 
+                                  'bg-white/5 text-white/30 border border-white/10'
+                                }`}>
+                                  {f.homeId === f.awayId ? 'Automatic' : f.status === 'played' ? 'Result' : f.status === 'overdue' ? 'Overdue' : 'Live Draw'}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          )}
+          {activeTab === 'fixtures' && (
+            <motion.div
+              key="fixtures"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl uppercase tracking-wider">
+                  Match <span className="text-pl-pink">Fixtures</span>
+                </h2>
+                <button 
+                  onClick={generateSeason}
+                  className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform"
+                >
+                  Generate Season
+                </button>
+              </div>
+
+              {allFixtures.filter(f => f.competition === 'league').length === 0 ? (
+                <div className="text-center py-20 glass rounded-xl">
+                  <Calendar className="mx-auto text-white/10 mb-4" size={48} />
+                  <p className="text-white/40 font-condensed tracking-widest uppercase">No fixtures generated yet</p>
+                </div>
+              ) : (
+                <div className="space-y-10">
+                  {Array.from(new Set(allFixtures.filter(f => f.competition === 'league').map(f => f.matchday))).sort((a, b) => (a as number) - (b as number)).map(md => (
+                    <div key={md} className="space-y-4">
+                      <div className="flex items-center gap-4">
+                        <div className="h-px flex-grow bg-white/10"></div>
+                        <h3 className="font-condensed font-bold text-xs uppercase tracking-[0.3em] text-pl-pink">Matchday {md}</h3>
+                        <div className="h-px flex-grow bg-white/10"></div>
+                      </div>
+                      
+                      <div className="grid gap-3">
+                        {allFixtures.filter(f => f.competition === 'league' && f.matchday === md).map(f => {
+                          const isMyMatch = players.some(p => p.id === f.homeId || p.id === f.awayId);
+                          return (
+                            <div 
+                              key={f.id}
+                              onClick={() => {
+                                setSelectedFixture(f);
+                                setScores({ home: f.homeScore || 0, away: f.awayScore || 0 });
+                                setShowModal(true);
+                              }}
+                              className={`glass transition-all rounded-lg p-4 flex items-center justify-between group border-l-4 cursor-pointer hover:bg-white/10 ${
+                                isMyMatch ? 'border-pl-cyan bg-pl-cyan/5' : 'border-transparent'
+                              }`}
+                            >
+                            <div className="flex-1 text-right font-bold pr-6 group-hover:text-pl-cyan transition-colors">{f.homeName}</div>
+                            
+                            <div className="flex items-center gap-4 bg-pl-ink/50 px-6 py-2 rounded-full border border-white/5">
+                              <div className="font-display text-2xl w-8 text-center">
+                                {f.status === 'played' ? f.homeScore : '-'}
+                              </div>
+                              <div className="text-white/20 font-condensed text-[10px] uppercase tracking-widest">VS</div>
+                              <div className="font-display text-2xl w-8 text-center">
+                                {f.status === 'played' ? f.awayScore : '-'}
+                              </div>
+                            </div>
+
+                            <div className="flex-1 text-left font-bold pl-6 group-hover:text-pl-cyan transition-colors">{f.awayName}</div>
+                            
+                            <div className="hidden md:flex flex-col items-end min-w-[100px] ml-4">
+                              <div className="flex items-center gap-2 mb-1">
+                                {comments.filter(c => c.fixtureId === f.id).length > 0 && (
+                                  <div className="flex items-center gap-1 text-[8px] text-pl-pink font-bold mr-2">
+                                    <MessageSquare size={10} />
+                                    {comments.filter(c => c.fixtureId === f.id).length}
+                                  </div>
+                                )}
+                                {f.status === 'played' && (
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      shareToWhatsApp(f);
+                                    }}
+                                    className="p-1 text-emerald-500 hover:scale-110 transition-transform"
+                                    title="Share to WhatsApp"
+                                  >
+                                    <MessageCircle size={14} />
+                                  </button>
+                                )}
+                                <span className={`text-[8px] font-condensed font-bold uppercase tracking-widest px-2 py-1 rounded ${
+                                  f.status === 'played' ? 'bg-green-500/10 text-green-400' : 
+                                  f.status === 'overdue' ? 'bg-yellow-500/10 text-yellow-400' : 
+                                  'bg-white/5 text-white/30'
+                                }`}>
+                                  {f.status === 'played' ? 'Full Time' : f.status === 'overdue' ? 'Overdue' : 'Pending'}
+                                </span>
+                              </div>
+                              <span className="text-[8px] text-white/20 uppercase tracking-widest font-condensed">
+                                {f.deadline}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+          {activeTab === 'players' && (
+            <motion.div
+              key="players"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl uppercase tracking-wider">
+                  Squad <span className="text-pl-pink">Roster</span>
+                </h2>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-6">
+                <div className="md:col-span-1">
+                  <div className="glass rounded-xl p-6 sticky top-24">
+                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-pl-cyan mb-6">Add New Player</h3>
+                    <form onSubmit={addPlayer} className="space-y-4 mb-8 pb-8 border-b border-white/5">
+                      <div>
+                        <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">PSN / Name</label>
+                        <input name="name" required className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. PlayerOne" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Club Choice</label>
+                        <input name="club" className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. Man City" />
+                      </div>
+                      <button className="w-full bg-pl-pink text-white py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all flex items-center justify-center gap-2">
+                        <Plus size={14} /> Add to Squad
+                      </button>
+                    </form>
+
+                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-pl-cyan mb-4">Bulk Import</h3>
+                    <div className="space-y-4">
+                      <textarea 
+                        value={bulkText}
+                        onChange={(e) => setBulkText(e.target.value)}
+                        placeholder="Paste names here (one per line)..."
+                        className="w-full h-32 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors resize-none"
+                      />
+                      <button 
+                        onClick={addBulkPlayers}
+                        className="w-full border border-pl-cyan text-pl-cyan py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:bg-pl-cyan hover:text-pl-ink transition-all flex items-center justify-center gap-2"
+                      >
+                        <Users size={14} /> Import List
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2 space-y-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-white/40">Current Squad ({players.length})</h3>
+                    {players.length > 0 && (
+                      <button 
+                        onClick={clearAllPlayers}
+                        className="text-[10px] font-condensed font-bold uppercase tracking-widest text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
+                      >
+                        <Trash2 size={12} /> Clear All
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    {players.map((p, i) => (
+                      <div 
+                        key={p.id} 
+                        onClick={() => {
+                          setSelectedPlayer(p);
+                          setPlayerBio(p.bio || '');
+                          setShowPlayerModal(true);
+                        }}
+                        className="glass rounded-xl p-4 flex items-center justify-between group cursor-pointer hover:bg-white/5 transition-all"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 rounded bg-pl-purple flex items-center justify-center font-display text-2xl text-pl-cyan">
+                            {i + 1}
+                          </div>
+                          <div>
+                            <div className="font-bold">{p.name}</div>
+                            <div className="text-[10px] font-condensed text-white/40 uppercase tracking-widest">{p.club || 'No Club'}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAuctionPlayer(p);
+                              setBidAmount(p.value || 10);
+                              setShowAuctionModal(true);
+                            }}
+                            className="p-2 text-white/20 hover:text-pl-cyan transition-colors md:opacity-0 md:group-hover:opacity-100"
+                            title="Auction Player"
+                          >
+                            <Swords size={16} />
+                          </button>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deletePlayer(p.id);
+                            }}
+                            className="p-2 text-white/20 hover:text-red-500 transition-colors md:opacity-0 md:group-hover:opacity-100"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {players.length === 0 && (
+                    <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-xl">
+                      <Users className="mx-auto text-white/5 mb-4" size={48} />
+                      <p className="text-white/20 font-condensed uppercase tracking-widest">No players in squad</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'h2h' && (
+            <motion.div
+              key="h2h"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl uppercase tracking-wider">
+                  Head to <span className="text-pl-pink">Head</span>
+                </h2>
+              </div>
+
+              <div className="glass rounded-xl p-6">
+                <div className="grid md:grid-cols-2 gap-8 items-center">
+                  <div className="space-y-4">
+                    <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest">Select Players</label>
+                    <div className="flex items-center gap-4">
+                      <select 
+                        value={h2hPlayers.p1}
+                        onChange={(e) => setH2hPlayers({ ...h2hPlayers, p1: e.target.value })}
+                        className="flex-1 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors"
+                      >
+                        <option value="">Player 1</option>
+                        {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                      <div className="font-display text-xl text-white/20">VS</div>
+                      <select 
+                        value={h2hPlayers.p2}
+                        onChange={(e) => setH2hPlayers({ ...h2hPlayers, p2: e.target.value })}
+                        className="flex-1 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors"
+                      >
+                        <option value="">Player 2</option>
+                        {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  {h2hData ? (
+                    <div className="flex items-center justify-around bg-pl-ink/50 p-6 rounded-lg border border-white/5">
+                      <div className="text-center">
+                        <div className="font-display text-4xl text-pl-cyan">{h2hData.p1w}</div>
+                        <div className="text-[10px] font-condensed text-white/40 uppercase tracking-widest mt-1">Wins</div>
+                        <div className="text-[10px] font-condensed text-pl-cyan/60 uppercase tracking-widest mt-1">{h2hData.p1g} Goals</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="font-display text-4xl text-white/40">{h2hData.draws}</div>
+                        <div className="text-[10px] font-condensed text-white/40 uppercase tracking-widest mt-1">Draws</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="font-display text-4xl text-pl-pink">{h2hData.p2w}</div>
+                        <div className="text-[10px] font-condensed text-white/40 uppercase tracking-widest mt-1">Wins</div>
+                        <div className="text-[10px] font-condensed text-pl-pink/60 uppercase tracking-widest mt-1">{h2hData.p2g} Goals</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center text-white/20 font-condensed uppercase tracking-widest text-sm">
+                      Select two players to see history
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {h2hData && (
+                <div className="space-y-4">
+                  <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-white/40">Match History</h3>
+                  <div className="grid gap-3">
+                    {h2hData.matches.map(f => {
+                      const isP1Home = f.homeId === h2hPlayers.p1;
+                      const p1Goals = isP1Home ? f.homeScore : f.awayScore;
+                      const p2Goals = isP1Home ? f.awayScore : f.homeScore;
+                      
+                      let result = '';
+                      let resultColor = 'bg-white/5 text-white/20';
+                      
+                      if (f.status === 'played') {
+                        if (p1Goals! > p2Goals!) {
+                          result = 'W';
+                          resultColor = 'bg-green-500/20 text-green-400 border border-green-500/30';
+                        } else if (p1Goals! < p2Goals!) {
+                          result = 'L';
+                          resultColor = 'bg-red-500/20 text-red-400 border border-red-500/30';
+                        } else {
+                          result = 'D';
+                          resultColor = 'bg-white/10 text-white/60 border border-white/20';
+                        }
+                      }
+
+                      return (
+                        <div key={f.id} className="glass rounded-lg p-4 flex items-center justify-between group hover:bg-white/5 transition-colors">
+                          <div className="flex items-center gap-3 flex-1">
+                            {result && (
+                              <div className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold ${resultColor}`}>
+                                {result}
+                              </div>
+                            )}
+                            <div className={`font-bold ${isP1Home ? 'text-pl-cyan' : ''}`}>{f.homeName}</div>
+                          </div>
+                          
+                          <div className="flex items-center gap-4 px-6 bg-pl-ink/30 py-1 rounded-full">
+                            <div className="font-display text-xl w-6 text-center">{f.status === 'played' ? f.homeScore : '-'}</div>
+                            <div className="text-white/10 font-condensed text-[8px] uppercase tracking-widest">VS</div>
+                            <div className="font-display text-xl w-6 text-center">{f.status === 'played' ? f.awayScore : '-'}</div>
+                          </div>
+                          
+                          <div className={`flex-1 text-right font-bold ${!isP1Home ? 'text-pl-cyan' : ''}`}>{f.awayName}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+          {activeTab === 'market' && (
+            <motion.div
+              key="market"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl uppercase tracking-wider flex items-center gap-3">
+                  Transfer <span className="text-pl-cyan">Market</span>
+                </h2>
+                <div className="text-[10px] font-condensed font-bold text-white/40 uppercase tracking-widest">
+                  Live Auctions
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-6">
+                <div className="md:col-span-2 space-y-6">
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    {auctions.filter(a => a.status === 'active').map((auction) => (
+                      <div key={auction.id} className="glass rounded-2xl p-6 border-l-4 border-pl-cyan relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                          <Swords size={64} />
+                        </div>
+                        
+                        <div className="relative z-10">
+                          <div className="flex justify-between items-start mb-4">
+                            <div>
+                              <h3 className="font-display text-xl uppercase tracking-wider">{auction.playerName}</h3>
+                              <p className="text-[10px] font-condensed text-white/40 uppercase tracking-widest">Seller: {allUsers.find(u => u.uid === auction.sellerUid)?.displayName || 'Unknown'}</p>
+                            </div>
+                            <div className="bg-pl-cyan/10 text-pl-cyan px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest">
+                              Active
+                            </div>
+                          </div>
+
+                          <div className="bg-pl-ink/50 rounded-xl p-4 mb-6 border border-white/5">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-[10px] font-condensed text-white/40 uppercase tracking-widest">Current Bid</span>
+                              <span className="text-xl font-display text-pl-cyan">£{auction.currentBid}M</span>
+                            </div>
+                            <div className="text-[10px] font-condensed text-white/60 uppercase tracking-widest truncate">
+                              Highest Bidder: {auction.highestBidderName || 'None'}
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="flex gap-2">
+                              <input 
+                                type="number" 
+                                placeholder="Bid amount..."
+                                className="flex-1 bg-pl-ink border border-white/10 rounded px-3 py-2 text-xs focus:border-pl-cyan outline-none transition-colors"
+                                onChange={(e) => setBidAmount(parseInt(e.target.value) || 0)}
+                              />
+                              <button 
+                                onClick={() => placeBid(auction, bidAmount)}
+                                className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-[10px] uppercase tracking-widest hover:brightness-110 transition-all"
+                              >
+                                Bid
+                              </button>
+                            </div>
+                            {isAdmin && (
+                              <button 
+                                onClick={() => completeAuction(auction)}
+                                className="w-full border border-white/10 text-white/40 py-2 rounded font-condensed font-bold text-[10px] uppercase tracking-widest hover:bg-white/5 transition-all"
+                              >
+                                Admin: Complete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {auctions.filter(a => a.status === 'active').length === 0 && (
+                      <div className="sm:col-span-2 glass rounded-2xl p-12 text-center border-dashed border-2 border-white/5">
+                        <MessageSquare className="mx-auto text-white/10 mb-4" size={48} />
+                        <p className="text-white/40 font-condensed uppercase tracking-widest text-sm">No active auctions at the moment</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="glass rounded-2xl p-6 border-t-4 border-pl-pink">
+                    <h3 className="font-display text-lg uppercase tracking-wider mb-4">Market <span className="text-pl-pink">Rules</span></h3>
+                    <ul className="space-y-4 text-xs text-white/60 leading-relaxed">
+                      <li className="flex gap-3">
+                        <div className="w-4 h-4 rounded-full bg-pl-pink/20 flex-shrink-0 flex items-center justify-center text-[8px] font-bold text-pl-pink">1</div>
+                        Auctions last 24 hours from start.
+                      </li>
+                      <li className="flex gap-3">
+                        <div className="w-4 h-4 rounded-full bg-pl-pink/20 flex-shrink-0 flex items-center justify-center text-[8px] font-bold text-pl-pink">2</div>
+                        Highest bidder at expiry wins the player.
+                      </li>
+                      <li className="flex gap-3">
+                        <div className="w-4 h-4 rounded-full bg-pl-pink/20 flex-shrink-0 flex items-center justify-center text-[8px] font-bold text-pl-pink">3</div>
+                        Salary Cap: Total squad value cannot exceed £200M.
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="glass rounded-2xl p-6">
+                    <h3 className="font-display text-lg uppercase tracking-wider mb-4">Recent <span className="text-pl-cyan">Transfers</span></h3>
+                    <div className="space-y-3">
+                      {auctions.filter(a => a.status === 'completed').slice(0, 5).map(a => (
+                        <div key={a.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg border border-white/5">
+                          <div>
+                            <div className="font-bold text-xs">{a.playerName}</div>
+                            <div className="text-[8px] text-white/40 uppercase tracking-widest">To: {a.highestBidderName}</div>
+                          </div>
+                          <div className="text-pl-cyan font-display text-sm">£{a.currentBid}M</div>
+                        </div>
+                      ))}
+                      {auctions.filter(a => a.status === 'completed').length === 0 && (
+                        <p className="text-[10px] text-white/20 uppercase tracking-widest text-center py-4">No recent transfers</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+          {activeTab === 'news' && (
+            <motion.div
+              key="news"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="font-display text-4xl uppercase tracking-wider mb-1">League <span className="text-pl-pink">News</span></h2>
+                  <p className="text-white/40 font-condensed uppercase tracking-widest text-xs">Latest updates from SHATTA MOVEMENT LEAGUE</p>
+                </div>
+                {isAdmin && (
+                  <button 
+                    onClick={() => {
+                      setEditingNews(null);
+                      setNewNews({ title: '', content: '', imageUrl: '' });
+                      setShowNewsModal(true);
+                    }}
+                    className="bg-pl-cyan text-pl-ink px-6 py-3 rounded-xl font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform flex items-center gap-2"
+                  >
+                    <Newspaper size={16} /> Create Article
+                  </button>
+                )}
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-8">
+                {news.map((article) => (
+                  <motion.article 
+                    key={article.id}
+                    layout
+                    className="glass rounded-2xl overflow-hidden flex flex-col group"
+                  >
+                    {article.imageUrl && (
+                      <div className="aspect-video relative overflow-hidden">
+                        <img 
+                          src={article.imageUrl} 
+                          alt={article.title} 
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-pl-ink to-transparent opacity-60"></div>
+                      </div>
+                    )}
+                    <div className="p-8 flex-1 flex flex-col">
+                      <div className="flex justify-between items-start mb-4">
+                        <span className="text-[10px] font-bold text-pl-pink uppercase tracking-widest bg-pl-pink/10 px-2 py-1 rounded">
+                          {article.createdAt?.toDate().toLocaleDateString() || 'Just now'}
+                        </span>
+                        {isAdmin && (
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => {
+                                setEditingNews(article);
+                                setNewNews({ title: article.title, content: article.content, imageUrl: article.imageUrl || '' });
+                                setShowNewsModal(true);
+                              }}
+                              className="text-white/20 hover:text-pl-cyan transition-colors"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button 
+                              onClick={() => deleteNews(article.id)}
+                              className="text-white/20 hover:text-red-500 transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <h3 className="font-display text-2xl uppercase tracking-wider mb-4 group-hover:text-pl-cyan transition-colors leading-tight">
+                        {article.title}
+                      </h3>
+                      <p className="text-white/60 text-sm leading-relaxed mb-8 flex-1 line-clamp-4">
+                        {article.content}
+                      </p>
+                      <div className="flex items-center gap-3 pt-6 border-t border-white/5">
+                        <div className="w-8 h-8 rounded-full bg-pl-purple flex items-center justify-center text-[10px] font-bold text-pl-cyan">
+                          {article.authorName?.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Posted by</p>
+                          <p className="text-xs font-bold text-pl-cyan">{article.authorName}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.article>
+                ))}
+                {news.length === 0 && (
+                  <div className="md:col-span-2 py-20 text-center glass rounded-2xl border-dashed border-2 border-white/5">
+                    <Newspaper className="mx-auto text-white/10 mb-4" size={48} />
+                    <p className="text-white/40 font-condensed uppercase tracking-widest text-sm">No news articles yet</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+          {activeTab === 'rules' && (
+            <motion.div
+              key="rules"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="max-w-2xl mx-auto space-y-8"
+            >
+              <div className="text-center">
+                <h2 className="font-display text-4xl uppercase tracking-wider mb-2">Rule <span className="text-pl-pink">Book</span></h2>
+                <p className="text-white/40 font-condensed uppercase tracking-widest text-xs">Season 2025/26 Regulations</p>
+              </div>
+
+              <div className="space-y-4">
+                {[
+                  { title: "Tournament Format", desc: "Double Round Robin. Every player plays everyone else twice (Home & Away)." },
+                  { title: "Points System", desc: "3 points for a win, 1 for a draw, 0 for a loss." },
+                  { title: "Match Settings", desc: "6 minute halves, Tactical Defending, Normal Game Speed." },
+                  { title: "Deadlines", desc: "All fixtures must be played within 7 days of the matchday start. Failure to play results in a 3-0 forfeit." },
+                  { title: "Fair Play", desc: "Good vibes only. Rage quitting results in an automatic 3-0 loss and potential league ban." },
+                ].map((rule, i) => (
+                  <div key={i} className="glass rounded-xl p-6 flex gap-6">
+                    <div className="font-display text-4xl text-pl-pink/20 leading-none">{i + 1}</div>
+                    <div>
+                      <h4 className="font-condensed font-bold text-sm uppercase tracking-widest text-pl-cyan mb-2">{rule.title}</h4>
+                      <p className="text-white/60 text-sm leading-relaxed">{rule.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {toast && (
+            <motion.div 
+              initial={{ opacity: 0, y: 50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 50 }}
+              className={`fixed bottom-8 right-8 px-6 py-3 rounded-lg shadow-xl z-[200] font-condensed font-bold text-xs uppercase tracking-widest ${toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}
+            >
+              {toast.message}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {activeTab === 'admin' && isAdmin && (
+          <div className="space-y-12 pb-20">
+            {/* Stats Overview */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[
+                { label: 'Total Users', value: allUsers.length, icon: Users, color: 'text-pl-cyan' },
+                { label: 'Total Players', value: allPlayers.length, icon: Trophy, color: 'text-pl-pink' },
+                { label: 'League Matches', value: fixtures.length, icon: Swords, color: 'text-pl-purple' },
+                { label: 'UEFA Matches', value: uefaFixtures.length, icon: ShieldCheck, color: 'text-emerald-400' },
+              ].map((stat, i) => (
+                <div key={i} className="glass p-6 rounded-2xl border-b-2 border-white/5">
+                  <stat.icon className={`${stat.color} mb-3`} size={20} />
+                  <p className="text-[10px] font-condensed text-white/40 uppercase tracking-widest">{stat.label}</p>
+                  <p className="text-2xl font-display mt-1">{stat.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Quick Actions */}
+            <div className="glass p-8 rounded-2xl border-l-4 border-pl-cyan">
+              <div className="flex items-center gap-4 mb-8">
+                <div className="w-12 h-12 bg-pl-cyan/10 rounded-xl flex items-center justify-center">
+                  <ShieldCheck className="text-pl-cyan" size={24} />
+                </div>
+                <div>
+                  <h2 className="font-display text-2xl uppercase tracking-wider">Quick <span className="text-pl-cyan">Actions</span></h2>
+                  <p className="text-white/40 font-condensed uppercase tracking-widest text-[10px]">Global league management tools</p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <button 
+                  onClick={generateSeason}
+                  className="flex flex-col items-center justify-center p-6 glass rounded-xl hover:bg-pl-cyan/10 transition-all group border border-white/5"
+                >
+                  <Calendar className="text-pl-cyan mb-3 group-hover:scale-110 transition-transform" size={24} />
+                  <span className="font-condensed font-bold text-xs uppercase tracking-widest">Generate Season</span>
+                </button>
+                <button 
+                  onClick={resetLeague}
+                  className="flex flex-col items-center justify-center p-6 glass rounded-xl hover:bg-red-500/10 transition-all group border border-white/5"
+                >
+                  <Trash2 className="text-red-500 mb-3 group-hover:scale-110 transition-transform" size={24} />
+                  <span className="font-condensed font-bold text-xs uppercase tracking-widest">Reset All Fixtures</span>
+                </button>
+                <button 
+                  onClick={() => setActiveTab('news')}
+                  className="flex flex-col items-center justify-center p-6 glass rounded-xl hover:bg-pl-purple/10 transition-all group border border-white/5"
+                >
+                  <Newspaper className="text-pl-purple mb-3 group-hover:scale-110 transition-transform" size={24} />
+                  <span className="font-condensed font-bold text-xs uppercase tracking-widest">Manage News</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Player Management & Pre-Registration */}
+            <div className="grid lg:grid-cols-2 gap-8">
+              {/* Pre-Registration */}
+              <div className="glass p-8 rounded-2xl border-l-4 border-pl-cyan">
+                <div className="flex items-center gap-4 mb-8">
+                  <div className="w-12 h-12 bg-pl-cyan/10 rounded-xl flex items-center justify-center">
+                    <UserIcon className="text-pl-cyan" size={24} />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-2xl uppercase tracking-wider">Pre-<span className="text-pl-cyan">Registration</span></h2>
+                    <p className="text-white/40 font-condensed uppercase tracking-widest text-[10px]">Whitelist PSN IDs for signup</p>
+                  </div>
+                  <div className="ml-auto">
+                    <button 
+                      onClick={syncPlayersToPreReg}
+                      className="flex items-center gap-2 px-4 py-2 bg-pl-cyan/10 text-pl-cyan rounded-xl hover:bg-pl-cyan/20 transition-all border border-pl-cyan/20"
+                    >
+                      <Users size={14} />
+                      <span className="font-condensed font-bold text-[10px] uppercase tracking-widest">Sync Squad</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 mb-8">
+                  <input 
+                    type="text"
+                    value={newPsnId}
+                    onChange={(e) => setNewPsnId(e.target.value)}
+                    placeholder="Enter PSN ID..."
+                    className="flex-1 bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-cyan outline-none transition-colors"
+                  />
+                  <button 
+                    onClick={addPreRegPsn}
+                    className="bg-pl-cyan text-pl-ink px-6 rounded-xl font-condensed font-bold text-[10px] uppercase tracking-widest hover:brightness-110 transition-all"
+                  >
+                    Whitelist
+                  </button>
+                </div>
+
+                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 no-scrollbar">
+                  {preRegisteredPsns.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
+                      <div>
+                        <div className="font-bold text-sm">{p.psnId}</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className={`text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${p.claimed ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/10 text-white/40'}`}>
+                            {p.claimed ? 'Registered' : 'Pending'}
+                          </span>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => deletePreRegPsn(p.id)}
+                        className="text-white/20 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Player Management */}
+              <div className="glass p-8 rounded-2xl border-l-4 border-emerald-400">
+                <div className="flex items-center gap-4 mb-8">
+                  <div className="w-12 h-12 bg-emerald-400/10 rounded-xl flex items-center justify-center">
+                    <Trophy className="text-emerald-400" size={24} />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-2xl uppercase tracking-wider">Player <span className="text-emerald-400">Database</span></h2>
+                    <p className="text-white/40 font-condensed uppercase tracking-widest text-[10px]">Global list of all league participants</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 no-scrollbar">
+                  {allPlayers.sort((a, b) => a.name.localeCompare(b.name)).map((p) => (
+                    <div key={p.id} className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-400/10 flex items-center justify-center text-emerald-400 font-bold">
+                          {p.name.charAt(0)}
+                        </div>
+                        <div>
+                          <div className="font-bold text-sm">{p.name}</div>
+                          <div className="text-[10px] text-white/40 uppercase tracking-widest">{p.club}</div>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => deletePlayer(p.id)}
+                        className="text-white/20 hover:text-red-500 transition-colors p-2"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Bulk Results */}
+            <div className="max-w-2xl mx-auto">
+              <div className="glass p-8 rounded-2xl border-l-4 border-pl-pink">
+                <div className="flex items-center gap-4 mb-6">
+                  <div className="w-12 h-12 bg-pl-pink/10 rounded-xl flex items-center justify-center">
+                    <Trophy className="text-pl-pink" size={24} />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-2xl uppercase tracking-wider">Bulk <span className="text-pl-pink">Results</span></h2>
+                    <p className="text-white/40 font-condensed uppercase tracking-widest text-[10px]">Upload match scores in bulk</p>
+                  </div>
+                </div>
+                
+                <div className="space-y-4">
+                  <p className="text-[10px] text-white/40 uppercase tracking-widest leading-relaxed">
+                    Format: <span className="text-pl-cyan">Home Team X-Y Away Team</span> (One per line)<br/>
+                    Example: <span className="text-white/60 italic">Shatta 2-1 Movement</span>
+                  </p>
+                  <textarea 
+                    value={bulkResultsText}
+                    onChange={(e) => setBulkResultsText(e.target.value)}
+                    placeholder="Paste results here..."
+                    className="w-full bg-pl-ink border border-white/10 rounded-xl p-4 text-xs text-white/80 focus:border-pl-pink outline-none transition-colors h-40 resize-none font-mono"
+                  />
+                  <button 
+                    onClick={bulkUploadResults}
+                    className="w-full bg-pl-pink text-white py-4 rounded-xl font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all"
+                  >
+                    Upload Scores
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Auction Modal */}
+      {showAuctionModal && auctionPlayer && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-pl-ink/90 backdrop-blur-sm"
+            onClick={() => setShowAuctionModal(false)}
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="glass rounded-2xl p-8 w-full max-w-md relative z-10"
+          >
+            <h3 className="font-display text-xl uppercase tracking-widest text-pl-cyan mb-2">Start Auction</h3>
+            <p className="text-[10px] font-condensed text-white/40 uppercase tracking-[0.2em] mb-8">List {auctionPlayer.name} on the Transfer Market</p>
+            
+            <div className="space-y-6 mb-8">
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Starting Bid (Millions)</label>
+                <input 
+                  type="number" 
+                  value={bidAmount}
+                  onChange={(e) => setBidAmount(parseInt(e.target.value) || 0)}
+                  className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" 
+                  placeholder="e.g. 10"
+                />
+              </div>
+              <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                <p className="text-[10px] text-white/40 leading-relaxed uppercase tracking-wider">
+                  Note: Once started, the auction will run for 24 hours. You cannot cancel an active auction if there are bids.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={() => startAuction(auctionPlayer, bidAmount)}
+                className="bg-pl-cyan text-pl-ink py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all"
+              >
+                Start Auction
+              </button>
+              <button 
+                onClick={() => setShowAuctionModal(false)}
+                className="bg-white/5 text-white/60 py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Score / Fixture Detail Modal */}
+      {showModal && selectedFixture && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-pl-ink/90 backdrop-blur-sm"
+            onClick={() => setShowModal(false)}
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="glass rounded-2xl p-8 w-full max-w-lg relative z-10 max-h-[90vh] overflow-y-auto no-scrollbar"
+          >
+            <div className="flex justify-between items-start mb-6">
+              {(() => {
+                const isMyMatch = players.some(p => p.id === selectedFixture.homeId || p.id === selectedFixture.awayId);
+                const canEdit = isAdmin || (isMyMatch && selectedFixture.status !== 'played');
+                return (
+                  <>
+                    <div>
+                      <h3 className="font-display text-xl uppercase tracking-widest text-pl-cyan mb-1">
+                        {canEdit ? 'Enter Result' : 'Match Details'}
+                      </h3>
+                      <p className="text-[10px] font-condensed text-white/40 uppercase tracking-[0.2em]">Matchday {selectedFixture.matchday} • {selectedFixture.deadline}</p>
+                    </div>
+                    {selectedFixture.status === 'played' && (
+                      <button 
+                        onClick={() => shareToWhatsApp(selectedFixture)}
+                        className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-colors"
+                      >
+                        <MessageCircle size={12} /> Share
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+            
+            {(() => {
+              const isMyMatch = players.some(p => p.id === selectedFixture.homeId || p.id === selectedFixture.awayId);
+              const canEdit = isAdmin || (isMyMatch && selectedFixture.status !== 'played');
+              return (
+                <>
+                  <div className="flex items-center justify-between gap-6 mb-10">
+                    <div className="flex-1 text-center space-y-4">
+                      <div className="font-bold text-sm truncate">{selectedFixture.homeName}</div>
+                      {canEdit ? (
+                        <input 
+                          type="number" 
+                          value={scores.home}
+                          onChange={(e) => setScores({ ...scores, home: parseInt(e.target.value) || 0 })}
+                          className="w-20 h-20 bg-pl-ink border-2 border-white/10 rounded-xl text-center font-display text-4xl text-pl-cyan focus:border-pl-cyan outline-none transition-colors" 
+                        />
+                      ) : (
+                        <div className="w-20 h-20 bg-white/5 rounded-xl flex items-center justify-center font-display text-4xl text-white/60 mx-auto">
+                          {selectedFixture.status === 'played' ? selectedFixture.homeScore : '-'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="font-display text-2xl text-white/20 mt-8">VS</div>
+                    <div className="flex-1 text-center space-y-4">
+                      <div className="font-bold text-sm truncate">{selectedFixture.awayName}</div>
+                      {canEdit ? (
+                        <input 
+                          type="number" 
+                          value={scores.away}
+                          onChange={(e) => setScores({ ...scores, away: parseInt(e.target.value) || 0 })}
+                          className="w-20 h-20 bg-pl-ink border-2 border-white/10 rounded-xl text-center font-display text-4xl text-pl-cyan focus:border-pl-cyan outline-none transition-colors" 
+                        />
+                      ) : (
+                        <div className="w-20 h-20 bg-white/5 rounded-xl flex items-center justify-center font-display text-4xl text-white/60 mx-auto">
+                          {selectedFixture.status === 'played' ? selectedFixture.awayScore : '-'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {canEdit && (
+                    <div className="grid grid-cols-2 gap-3 mb-10">
+                      <button 
+                        onClick={submitScore}
+                        className="bg-pl-cyan text-pl-ink py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all"
+                      >
+                        Confirm Score
+                      </button>
+                      <button 
+                        onClick={() => setShowModal(false)}
+                        className="bg-white/5 text-white/60 py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+
+            {/* Comments Section */}
+            <div className="border-t border-white/5 pt-8">
+              <h4 className="font-display text-lg uppercase tracking-wider mb-6 flex items-center gap-2">
+                Banter <span className="text-pl-pink">Box</span>
+                <span className="text-[10px] bg-pl-pink/20 text-pl-pink px-2 py-0.5 rounded-full">
+                  {comments.filter(c => c.fixtureId === selectedFixture.id).length}
+                </span>
+              </h4>
+
+              <div className="space-y-4 mb-6 max-h-60 overflow-y-auto no-scrollbar pr-2">
+                {comments.filter(c => c.fixtureId === selectedFixture.id).map((comment) => (
+                  <div key={comment.id} className="flex gap-3 group">
+                    <img src={comment.authorPhoto || ''} alt="" className="w-8 h-8 rounded-full border border-white/10 flex-shrink-0" />
+                    <div className="flex-1">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-bold text-pl-cyan uppercase tracking-widest">{comment.authorName}</span>
+                        {(comment.authorUid === user?.uid || isAdmin) && (
+                          <button 
+                            onClick={() => deleteComment(comment.id)}
+                            className="text-white/10 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                          >
+                            <Trash2 size={10} />
+                          </button>
+                        )}
+                      </div>
+                      <div className="bg-white/5 rounded-xl p-3 text-xs text-white/70 leading-relaxed">
+                        {comment.text}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {comments.filter(c => c.fixtureId === selectedFixture.id).length === 0 && (
+                  <div className="text-center py-8 text-white/20 font-condensed uppercase tracking-widest text-[10px]">
+                    No banter yet. Start the fire!
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addComment(selectedFixture.id)}
+                  placeholder="Type your banter..."
+                  className="flex-1 bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-cyan outline-none transition-colors"
+                />
+                <button 
+                  onClick={() => addComment(selectedFixture.id)}
+                  className="bg-pl-pink text-white p-3 rounded-xl hover:scale-105 transition-transform"
+                >
+                  <Send size={16} />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Player Profile Modal */}
+      {showPlayerModal && selectedPlayer && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-pl-ink/90 backdrop-blur-sm"
+            onClick={() => setShowPlayerModal(false)}
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="relative glass p-8 rounded-2xl max-w-lg w-full border-l-4 border-pl-cyan shadow-2xl"
+          >
+            <div className="flex items-center gap-6 mb-8">
+              <div className="w-20 h-20 rounded-2xl bg-pl-purple flex items-center justify-center font-display text-4xl text-pl-cyan">
+                {players.findIndex(p => p.id === selectedPlayer.id) + 1}
+              </div>
+              <div>
+                <h2 className="font-display text-3xl uppercase tracking-wider">{selectedPlayer.name}</h2>
+                <p className="text-pl-cyan font-condensed font-bold uppercase tracking-widest text-sm">{selectedPlayer.club}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-6 mb-8">
+              <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                <div className="text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Current Form</div>
+                <div className="flex gap-1">
+                  {getPlayerForm(selectedPlayer.id).length > 0 ? (
+                    getPlayerForm(selectedPlayer.id).map((res, i) => (
+                      <span key={i} className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold ${
+                        res === 'W' ? 'bg-green-500 text-white' : 
+                        res === 'L' ? 'bg-red-500 text-white' : 
+                        'bg-yellow-500 text-pl-ink'
+                      }`}>
+                        {res}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[10px] text-white/20 uppercase tracking-widest">No matches played</span>
+                  )}
+                </div>
+              </div>
+              <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                <div className="text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Status</div>
+                <div className="text-xs font-bold text-white/80 uppercase tracking-widest">Active Squad</div>
+              </div>
+            </div>
+
+            <div className="space-y-4 mb-8">
+              <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest">Player Biography</label>
+              {selectedPlayer.bio ? (
+                <div className="space-y-4">
+                  <p className="text-sm text-white/70 leading-relaxed italic">"{selectedPlayer.bio}"</p>
+                  <button 
+                    onClick={() => setPlayerBio(selectedPlayer.bio || '')}
+                    className="text-[10px] font-bold text-pl-cyan uppercase tracking-widest hover:underline"
+                  >
+                    Edit Bio
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-pl-cyan/5 border border-dashed border-pl-cyan/20 p-6 rounded-xl text-center">
+                  <p className="text-xs text-pl-cyan/60 font-condensed uppercase tracking-widest mb-4">No biography added yet</p>
+                </div>
+              )}
+              
+              <div className="mt-4">
+                <textarea 
+                  value={playerBio}
+                  onChange={(e) => setPlayerBio(e.target.value)}
+                  placeholder="Enter a brief bio for this player..."
+                  className="w-full bg-pl-ink border border-white/10 rounded-xl p-4 text-sm text-white/80 focus:border-pl-cyan outline-none transition-colors h-24 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={updatePlayerBio}
+                className="bg-pl-cyan text-pl-ink py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all"
+              >
+                Save Profile
+              </button>
+              <button 
+                onClick={() => setShowPlayerModal(false)}
+                className="bg-white/5 text-white/60 py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+              >
+                Close
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* News Modal */}
+      {showNewsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-pl-ink/90 backdrop-blur-sm"
+            onClick={() => setShowNewsModal(false)}
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="glass rounded-2xl p-8 w-full max-w-lg relative z-10"
+          >
+            <h3 className="font-display text-xl uppercase tracking-widest text-pl-cyan mb-2">
+              {editingNews ? 'Edit Article' : 'Create Article'}
+            </h3>
+            <p className="text-[10px] font-condensed text-white/40 uppercase tracking-[0.2em] mb-8">Post updates to the SHATTA MOVEMENT LEAGUE news feed</p>
+            
+            <div className="space-y-6 mb-8">
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Title</label>
+                <input 
+                  type="text" 
+                  value={newNews.title}
+                  onChange={(e) => setNewNews({ ...newNews, title: e.target.value })}
+                  className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" 
+                  placeholder="e.g. Matchday 5 Highlights"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Content</label>
+                <textarea 
+                  value={newNews.content}
+                  onChange={(e) => setNewNews({ ...newNews, content: e.target.value })}
+                  className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors h-40 resize-none" 
+                  placeholder="Write your article here..."
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Image URL (Optional)</label>
+                <input 
+                  type="text" 
+                  value={newNews.imageUrl}
+                  onChange={(e) => setNewNews({ ...newNews, imageUrl: e.target.value })}
+                  className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" 
+                  placeholder="https://images.unsplash.com/..."
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={editingNews ? updateNews : addNews}
+                className="bg-pl-cyan text-pl-ink py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all"
+              >
+                {editingNews ? 'Update News' : 'Post News'}
+              </button>
+              <button 
+                onClick={() => setShowNewsModal(false)}
+                className="bg-white/5 text-white/60 py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      <footer className="bg-pl-ink border-t border-white/5 py-10 px-6">
+        <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded bg-pl-pink flex items-center justify-center font-display text-lg">SM</div>
+            <div className="font-condensed font-bold text-[10px] uppercase tracking-[0.3em]">SHATTA MOVEMENT LEAGUE</div>
+          </div>
+          <div className="text-white/20 font-condensed text-[10px] uppercase tracking-widest">
+            Built for the SHATTA MOVEMENT Community • 2026
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
