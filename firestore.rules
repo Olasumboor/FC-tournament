@@ -1,4 +1,5 @@
 rules_version = '2';
+// Updated: 2026-03-16 - Public Read Access
 service cloud.firestore {
   match /databases/{database}/documents {
     // ===============================================================

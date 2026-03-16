@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, Component, ErrorInfo, ReactNode } from 'react';
+// Version: 1.0.1 - Guest Sync Fix
 import { GoogleGenAI } from "@google/genai";
 import { 
   Trophy, 
