@@ -410,7 +410,7 @@ function LeagueApp() {
       unsubComments();
       unsubSeasons();
     };
-  }, [isAuthReady, user, selectedUserUid]);
+  }, [isAuthReady, user, selectedUserUid, isGuest]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1032,7 +1032,7 @@ function LeagueApp() {
       };
     });
 
-    allFixtures.filter(f => f.competition === 'league' && f.status === 'played').forEach(f => {
+    allFixtures.filter(f => f.competition === 'league' && f.status === 'played' && f.seasonId === currentSeasonId).forEach(f => {
       const h = stats[f.homeId];
       const a = stats[f.awayId];
       if (!h || !a) return;
@@ -1059,7 +1059,7 @@ function LeagueApp() {
     })).sort((a, b) => 
       b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga) || b.gf - a.gf || a.name.localeCompare(b.name)
     );
-  }, [allPlayers, allFixtures]);
+  }, [allPlayers, allFixtures, currentSeasonId]);
 
   if (loading || !isAuthReady) return <div className="flex items-center justify-center h-screen font-display text-2xl animate-pulse">LOADING...</div>;
 
@@ -1694,7 +1694,7 @@ function LeagueApp() {
 
                 <div className={`${isAdmin ? 'md:col-span-2' : 'md:col-span-3'} space-y-4`}>
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-white/40">Current Squad ({players.length})</h3>
+                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-white/40">Current Squad ({(isAdmin ? players : allPlayers).length})</h3>
                     {isAdmin && players.length > 0 && (
                       <button 
                         onClick={clearAllPlayers}
@@ -1705,7 +1705,7 @@ function LeagueApp() {
                     )}
                   </div>
                   <div className="grid sm:grid-cols-2 gap-4">
-                    {players.map((p, i) => (
+                    {(isAdmin ? players : allPlayers).map((p, i) => (
                       <div 
                         key={p.id} 
                         onClick={() => {
