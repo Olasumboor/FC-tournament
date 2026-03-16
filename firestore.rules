@@ -87,6 +87,16 @@ service cloud.firestore {
     //
     // ===============================================================
 
+    // Collection: seasons
+    // Document ID: {seasonId}
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - active: bool (required)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
     // ===============================================================
     // Helper Functions
     // ===============================================================
@@ -96,7 +106,8 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
          request.auth.token.email == "olaniyantoheebola@gmail.com");
     }
 
@@ -105,7 +116,7 @@ service cloud.firestore {
     }
 
     function isDocOwner() {
-      return isAuthenticated() && (request.auth.uid == resource.data.ownerUid || isAdmin());
+      return isAuthenticated() && (resource.data.ownerUid == request.auth.uid || isAdmin());
     }
 
     function isValidEmail(email) {
@@ -126,7 +137,7 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return (data.uid == request.auth.uid || isAdmin()) &&
-             data.email is string && isValidEmail(data.email) &&
+             (data.email == null || (data.email is string && isValidEmail(data.email))) &&
              (data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
              (data.photoURL == null || isValidUrl(data.photoURL)) &&
              (data.role == null || data.role in ['admin', 'user']) &&
@@ -151,14 +162,15 @@ service cloud.firestore {
     }
 
     function isValidFixture(data) {
-      return data.matchday is int && data.matchday >= 1 &&
+      return data.matchday is int &&
              data.homeId is string && data.awayId is string &&
              data.homeName is string && data.awayName is string &&
              data.status in ['pending', 'played', 'overdue'] &&
-             data.competition in ['league', 'uefa'] &&
+             data.competition in ['league', 'uefa', 'preseason'] &&
              (data.ownerUid == request.auth.uid || isAdmin()) &&
              (data.homeScore == null || data.homeScore is int) &&
-             (data.awayScore == null || data.awayScore is int);
+             (data.awayScore == null || data.awayScore is int) &&
+             (data.seasonId == null || data.seasonId is string);
     }
 
     function isValidNews(data) {
@@ -172,6 +184,11 @@ service cloud.firestore {
       return data.fixtureId is string &&
              data.text is string && data.text.size() > 0 && data.text.size() < 1000 &&
              data.authorUid == request.auth.uid;
+    }
+
+    function isValidSeason(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.active is bool;
     }
 
     // ===============================================================
@@ -190,41 +207,33 @@ service cloud.firestore {
     }
 
     match /players/{playerId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidPlayer(request.resource.data);
-      allow update: if isDocOwner() && isValidPlayer(request.resource.data);
-      allow delete: if isDocOwner();
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /fixtures/{fixtureId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidFixture(request.resource.data);
-      allow update: if isAdmin() && isValidFixture(request.resource.data);
-      allow delete: if isDocOwner();
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /seasons/{seasonId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /auctions/{auctionId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidAuction(request.resource.data);
-      allow update: if isAuthenticated() && (
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentBid', 'highestBidderUid', 'highestBidderName']) && 
-         request.resource.data.currentBid > resource.data.currentBid && 
-         request.resource.data.highestBidderUid == request.auth.uid &&
-         resource.data.status == 'active') ||
-        (isAdmin() || resource.data.sellerUid == request.auth.uid)
-      );
-      allow delete: if isAdmin() || (isAuthenticated() && resource.data.sellerUid == request.auth.uid);
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /news/{newsId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
     match /comments/{commentId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidComment(request.resource.data);
-      allow update, delete: if isAuthenticated() && (resource.data.authorUid == request.auth.uid || isAdmin());
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /{path=**} {

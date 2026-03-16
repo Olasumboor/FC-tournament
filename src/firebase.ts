@@ -8,7 +8,9 @@ import {
   User,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  updateProfile
+  updateProfile,
+  sendPasswordResetEmail,
+  signInAnonymously
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -46,6 +48,8 @@ export const updateAuthProfile = (displayName: string) => {
   }
 };
 export const logout = () => signOut(auth);
+export const resetPassword = (email: string) => sendPasswordResetEmail(auth, email);
+export const loginAnonymously = () => signInAnonymously(auth);
 
 // Firestore error handling
 export enum OperationType {

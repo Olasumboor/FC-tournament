@@ -28,8 +28,10 @@ import {
   loginWithGoogle, 
   loginWithEmail,
   registerWithEmail,
+  loginAnonymously,
   updateAuthProfile,
   logout, 
+  resetPassword,
   handleFirestoreError, 
   OperationType 
 } from './firebase';
@@ -72,8 +74,16 @@ type Fixture = {
   awayScore: number | null;
   status: 'pending' | 'played' | 'overdue';
   deadline: string;
-  competition: 'league' | 'uefa';
+  competition: 'league' | 'uefa' | 'preseason';
   ownerUid: string;
+  seasonId?: string;
+};
+
+type Season = {
+  id: string;
+  name: string;
+  active: boolean;
+  createdAt: any;
 };
 
 type PreRegisteredPsn = {
@@ -179,8 +189,6 @@ function LeagueApp() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('table');
   const [players, setPlayers] = useState<Player[]>([]);
-  const [fixtures, setFixtures] = useState<Fixture[]>([]);
-  const [uefaFixtures, setUefaFixtures] = useState<Fixture[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [selectedFixture, setSelectedFixture] = useState<Fixture | null>(null);
@@ -190,6 +198,7 @@ function LeagueApp() {
   const [bulkText, setBulkText] = useState('');
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isGuest, setIsGuest] = useState(false);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [selectedUserUid, setSelectedUserUid] = useState<string | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -209,14 +218,30 @@ function LeagueApp() {
   const [newComment, setNewComment] = useState('');
   const [showNewsModal, setShowNewsModal] = useState(false);
   const [bulkResultsText, setBulkResultsText] = useState('');
-  const [preRegisteredPsns, setPreRegisteredPsns] = useState<PreRegisteredPsn[]>([]);
-  const [newPsnId, setNewPsnId] = useState('');
-  const [loginForm, setLoginForm] = useState({ psnId: '', password: '', isRegistering: false });
+  const [pin, setPin] = useState('');
   const [authError, setAuthError] = useState('');
   const [isAdminLoginMode, setIsAdminLoginMode] = useState(false);
+  const [seasons, setSeasons] = useState<Season[]>([]);
+  const [currentSeasonId, setCurrentSeasonId] = useState<string | null>(null);
+  const [showSeasonModal, setShowSeasonModal] = useState(false);
+  const [newSeasonName, setNewSeasonName] = useState('');
+  const [showPreseasonModal, setShowPreseasonModal] = useState(false);
+  const [preseasonFixture, setPreseasonFixture] = useState({ homeId: '', awayId: '' });
+
+  const fixtures = useMemo(() => {
+    return allFixtures.filter(f => f.competition === 'league' && f.seasonId === currentSeasonId);
+  }, [allFixtures, currentSeasonId]);
+
+  const uefaFixtures = useMemo(() => {
+    return allFixtures.filter(f => f.competition === 'uefa' && f.seasonId === currentSeasonId);
+  }, [allFixtures, currentSeasonId]);
+
+  const preseasonFixtures = useMemo(() => {
+    return allFixtures.filter(f => f.competition === 'preseason' && f.seasonId === currentSeasonId);
+  }, [allFixtures, currentSeasonId]);
 
   const getPlayerForm = (playerId: string) => {
-    const playerFixtures = [...fixtures, ...uefaFixtures]
+    const playerFixtures = [...fixtures, ...uefaFixtures, ...preseasonFixtures]
       .filter(f => (f.homeId === playerId || f.awayId === playerId) && f.status === 'played')
       .sort((a, b) => {
         // Sort by matchday descending
@@ -236,9 +261,10 @@ function LeagueApp() {
 
   const h2hData = useMemo(() => {
     if (!h2hPlayers.p1 || !h2hPlayers.p2 || h2hPlayers.p1 === h2hPlayers.p2) return null;
-    const matches = fixtures.filter(f => 
-      (f.homeId === h2hPlayers.p1 && f.awayId === h2hPlayers.p2) ||
-      (f.homeId === h2hPlayers.p2 && f.awayId === h2hPlayers.p1)
+    const matches = allFixtures.filter(f => 
+      ((f.homeId === h2hPlayers.p1 && f.awayId === h2hPlayers.p2) ||
+       (f.homeId === h2hPlayers.p2 && f.awayId === h2hPlayers.p1)) &&
+      f.seasonId === currentSeasonId
     );
     const played = matches.filter(f => f.status === 'played');
     let p1w = 0, p2w = 0, draws = 0, p1g = 0, p2g = 0;
@@ -254,10 +280,10 @@ function LeagueApp() {
     });
     const sortedMatches = [...matches].sort((a, b) => {
       if (a.matchday !== b.matchday) return a.matchday - b.matchday;
-      return a.deadline.localeCompare(b.deadline);
+      return (a.deadline || '').localeCompare(b.deadline || '');
     });
     return { matches: sortedMatches, p1w, p2w, draws, p1g, p2g };
-  }, [h2hPlayers, fixtures]);
+  }, [h2hPlayers, allFixtures, currentSeasonId]);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -314,21 +340,19 @@ function LeagueApp() {
 
   useEffect(() => {
     if (!isAuthReady) return;
-    const unsubPreReg = onSnapshot(collection(db, 'preRegisteredPsns'), (snapshot) => {
-      setPreRegisteredPsns(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PreRegisteredPsn)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'preRegisteredPsns'));
-    return () => unsubPreReg();
+    // Pre-registration removed
   }, [isAuthReady]);
 
   useEffect(() => {
-    if (!isAuthReady || !user || !selectedUserUid) {
+    if (!isAuthReady || (!user && !isGuest)) {
       setLoading(false);
       return;
     }
 
     setLoading(true);
-    const playersQuery = query(collection(db, 'players'), where('ownerUid', '==', selectedUserUid));
-    const fixturesQuery = query(collection(db, 'fixtures'), where('ownerUid', '==', selectedUserUid));
+    const selectedUid = user?.uid || 'guest';
+    const playersQuery = query(collection(db, 'players'), where('ownerUid', '==', selectedUid));
+    const fixturesQuery = query(collection(db, 'fixtures'), where('ownerUid', '==', selectedUid));
 
     const unsubPlayers = onSnapshot(playersQuery, (snapshot) => {
       const pData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Player));
@@ -337,9 +361,7 @@ function LeagueApp() {
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'players'));
 
     const unsubFixtures = onSnapshot(fixturesQuery, (snapshot) => {
-      const fData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Fixture));
-      setFixtures(fData.filter(f => f.competition === 'league'));
-      setUefaFixtures(fData.filter(f => f.competition === 'uefa'));
+      // We use allFixtures now for derived states
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'fixtures'));
 
     const unsubAllPlayers = onSnapshot(collection(db, 'players'), (snapshot) => {
@@ -354,19 +376,28 @@ function LeagueApp() {
       setAuctions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Auction)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'auctions'));
 
-    const unsubBudget = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+    const unsubBudget = user ? onSnapshot(doc(db, 'users', user.uid), (doc) => {
       if (doc.exists()) {
         setUserBudget(doc.data().budget ?? 100);
       }
-    });
+    }) : () => {};
 
     const unsubNews = onSnapshot(collection(db, 'news'), (snapshot) => {
-      setNews(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as News)).sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds));
+      setNews(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as News)).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'news'));
 
     const unsubComments = onSnapshot(collection(db, 'comments'), (snapshot) => {
-      setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)).sort((a, b) => a.createdAt?.seconds - b.createdAt?.seconds));
+      setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)).sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'comments'));
+
+    const unsubSeasons = onSnapshot(collection(db, 'seasons'), (snapshot) => {
+      const sData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Season)).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setSeasons(sData);
+      if (sData.length > 0 && !currentSeasonId) {
+        const active = sData.find(s => s.active);
+        setCurrentSeasonId(active ? active.id : sData[0].id);
+      }
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'seasons'));
 
     return () => {
       unsubPlayers();
@@ -377,127 +408,103 @@ function LeagueApp() {
       unsubBudget();
       unsubNews();
       unsubComments();
+      unsubSeasons();
     };
   }, [isAuthReady, user, selectedUserUid]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
-    const { psnId, password, isRegistering } = loginForm;
-    const email = `${psnId.toLowerCase().trim()}@shatta.league`;
-
-    try {
-      const preReg = preRegisteredPsns.find(p => p.psnId.toLowerCase() === psnId.toLowerCase().trim());
-      
-      if (!preReg) {
-        setAuthError("This PSN ID is not pre-registered. Please contact an Admin.");
-        return;
+    
+    if (pin === '2580') {
+      try {
+        await loginAnonymously();
+        showToast("Welcome to the League Viewer!");
+      } catch (err: any) {
+        console.error("Auth error", err);
+        // If anonymous auth is disabled, we still allow entry as a guest
+        setIsGuest(true);
+        showToast("Entered as Guest Viewer");
       }
-
-      if (isRegistering) {
-        if (preReg.claimed) {
-          setAuthError("This PSN ID has already been registered. Please login instead.");
-          return;
-        }
-        const userCred = await registerWithEmail(email, password);
-        await updateAuthProfile(psnId);
-        
-        // Create user document with role from pre-registration
-        await setDoc(doc(db, 'users', userCred.user.uid), {
-          uid: userCred.user.uid,
-          displayName: psnId,
-          email: email,
-          role: preReg.role || 'user',
-          budget: 100,
-          createdAt: serverTimestamp()
-        });
-
-        await updateDoc(doc(db, 'preRegisteredPsns', preReg.id), { claimed: true });
-        showToast("Registration successful!");
-      } else {
-        await loginWithEmail(email, password);
-        showToast("Welcome back!");
-      }
-    } catch (err: any) {
-      console.error("Auth error", err);
-      if (err.code === 'auth/operation-not-allowed') {
-        setAuthError("Sign-in methods are not enabled in Firebase. Please enable 'Email/Password' and 'Google' in your Firebase Console Authentication tab.");
-      } else {
-        setAuthError(err.message || "Authentication failed");
-      }
+    } else {
+      setAuthError("Invalid PIN. Please try again.");
     }
   };
 
-  const addPreRegPsn = async () => {
-    if (!isAdmin || !newPsnId.trim()) return;
+  const addSeason = async () => {
+    if (!isAdmin || !newSeasonName.trim()) return;
     try {
-      await addDoc(collection(db, 'preRegisteredPsns'), {
-        psnId: newPsnId.trim(),
-        claimed: false,
-        role: 'user'
+      const seasonRef = doc(collection(db, 'seasons'));
+      await setDoc(seasonRef, {
+        name: newSeasonName.trim(),
+        active: seasons.length === 0,
+        createdAt: serverTimestamp()
       });
-      setNewPsnId('');
-      showToast("PSN ID pre-registered!");
+      setNewSeasonName('');
+      setShowSeasonModal(false);
+      showToast("Season created!");
     } catch (err) {
-      console.error("Pre-reg failed", err);
-      showToast("Failed to pre-register", 'error');
+      console.error("Add season failed", err);
+      showToast("Failed to create season", 'error');
     }
   };
 
-  const deletePreRegPsn = async (id: string) => {
+  const toggleSeasonActive = async (seasonId: string) => {
     if (!isAdmin) return;
     try {
-      await deleteDoc(doc(db, 'preRegisteredPsns', id));
-      showToast("Pre-registration removed");
-    } catch (err) {
-      console.error("Delete pre-reg failed", err);
-    }
-  };
-
-  const syncPlayersToPreReg = async () => {
-    if (!isAdmin) return;
-    try {
-      setLoading(true);
       const batch = writeBatch(db);
-      let count = 0;
-      
-      allPlayers.forEach(player => {
-        const exists = preRegisteredPsns.some(p => p.psnId.toLowerCase() === player.name.toLowerCase().trim());
-        if (!exists) {
-          const newRef = doc(collection(db, 'preRegisteredPsns'));
-          batch.set(newRef, {
-            psnId: player.name.trim(),
-            claimed: false,
-            role: 'user'
-          });
-          count++;
-        }
+      seasons.forEach(s => {
+        batch.update(doc(db, 'seasons', s.id), { active: s.id === seasonId });
       });
-
-      if (count > 0) {
-        await batch.commit();
-        showToast(`Synced ${count} players to whitelist!`);
-      } else {
-        showToast("All players are already whitelisted");
-      }
+      await batch.commit();
+      setCurrentSeasonId(seasonId);
+      showToast("Active season updated!");
     } catch (err) {
-      console.error("Sync failed", err);
-      showToast("Sync failed", 'error');
-    } finally {
-      setLoading(false);
+      console.error("Toggle season failed", err);
+    }
+  };
+
+  const addPreseasonFixture = async () => {
+    if (!isAdmin || !preseasonFixture.homeId || !preseasonFixture.awayId || !currentSeasonId) return;
+    try {
+      const homePlayer = players.find(p => p.id === preseasonFixture.homeId)!;
+      const awayPlayer = players.find(p => p.id === preseasonFixture.awayId)!;
+      
+      await addDoc(collection(db, 'fixtures'), {
+        matchday: 0,
+        homeId: preseasonFixture.homeId,
+        awayId: preseasonFixture.awayId,
+        homeName: homePlayer.name,
+        awayName: awayPlayer.name,
+        homeScore: null,
+        awayScore: null,
+        status: 'pending',
+        deadline: new Date().toISOString().split('T')[0],
+        competition: 'preseason',
+        ownerUid: user!.uid,
+        seasonId: currentSeasonId
+      });
+      setShowPreseasonModal(false);
+      setPreseasonFixture({ homeId: '', awayId: '' });
+      showToast("Preseason match added!");
+    } catch (err) {
+      console.error("Add preseason failed", err);
     }
   };
 
   const generateSeason = async () => {
-    if (!isAdmin || !user) return;
+    if (!isAdmin || !user || !currentSeasonId) {
+      showToast("Please select or create a season first", 'error');
+      return;
+    }
     try {
       setLoading(true);
       if (players.length < 2) throw new Error("Need at least 2 players to generate fixtures");
 
       const batch = writeBatch(db);
       
-      // Clear existing league fixtures
-      const existingFixtures = fixtures.filter(f => f.competition === 'league');
+      // Clear existing league fixtures for THIS season
+      const existingFixtures = fixtures.filter(f => f.competition === 'league' && f.seasonId === currentSeasonId);
       existingFixtures.forEach(f => {
         batch.delete(doc(db, 'fixtures', f.id));
       });
@@ -538,7 +545,8 @@ function LeagueApp() {
             status: 'pending',
             deadline: deadlineStr,
             competition: 'league',
-            ownerUid: user.uid
+            ownerUid: user.uid,
+            seasonId: currentSeasonId
           });
         }
       }
@@ -595,41 +603,25 @@ function LeagueApp() {
 
       for (let i = 0; i < shuffled.length; i += 2) {
         const homeId = shuffled[i];
+        const awayId = shuffled[i+1];
         const homePlayer = players.find(p => p.id === homeId)!;
+        const awayPlayer = awayId ? players.find(p => p.id === awayId)! : null;
         const fixtureRef = doc(collection(db, 'fixtures'));
-
-        if (shuffled[i+1]) {
-          const awayId = shuffled[i+1];
-          const awayPlayer = players.find(p => p.id === awayId)!;
-          batch.set(fixtureRef, {
-            matchday: nextRound,
-            homeId,
-            awayId,
-            homeName: homePlayer.name,
-            awayName: awayPlayer.name,
-            homeScore: null,
-            awayScore: null,
-            status: 'pending',
-            deadline: deadlineStr,
-            competition: 'uefa',
-            ownerUid: user.uid
-          });
-        } else {
-          // Bye
-          batch.set(fixtureRef, {
-            matchday: nextRound,
-            homeId,
-            awayId: homeId,
-            homeName: homePlayer.name,
-            awayName: homePlayer.name,
-            homeScore: 1,
-            awayScore: 0,
-            status: 'played',
-            deadline: deadlineStr,
-            competition: 'uefa',
-            ownerUid: user.uid
-          });
-        }
+        
+        batch.set(fixtureRef, {
+          matchday: nextRound,
+          homeId,
+          awayId: awayId || 'BYE',
+          homeName: homePlayer.name,
+          awayName: awayId ? awayPlayer!.name : 'BYE',
+          homeScore: awayId ? null : 3,
+          awayScore: awayId ? null : 0,
+          status: awayId ? 'pending' : 'played',
+          deadline: deadlineStr,
+          competition: 'uefa',
+          ownerUid: user.uid,
+          seasonId: currentSeasonId
+        });
       }
 
       await batch.commit();
@@ -1071,7 +1063,7 @@ function LeagueApp() {
 
   if (loading || !isAuthReady) return <div className="flex items-center justify-center h-screen font-display text-2xl animate-pulse">LOADING...</div>;
 
-  if (!user) {
+  if (!user && !isGuest) {
     return (
       <div className="min-h-screen bg-pl-ink text-white flex items-center justify-center p-6 font-sans">
         <motion.div 
@@ -1092,31 +1084,17 @@ function LeagueApp() {
           {!isAdminLoginMode ? (
             <form onSubmit={handleAuth} className="space-y-6">
               <div>
-                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">PSN ID (Username)</label>
-                <div className="relative">
-                  <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
-                  <input 
-                    type="text"
-                    required
-                    value={loginForm.psnId}
-                    onChange={(e) => setLoginForm({ ...loginForm, psnId: e.target.value })}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-4 text-sm focus:border-pl-cyan outline-none transition-all placeholder:text-white/10"
-                    placeholder="Enter your PSN ID"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Password</label>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Viewer Access PIN</label>
                 <div className="relative">
                   <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
                   <input 
                     type="password"
                     required
-                    value={loginForm.password}
-                    onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-4 text-sm focus:border-pl-cyan outline-none transition-all placeholder:text-white/10"
-                    placeholder="••••••••"
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-4 text-sm focus:border-pl-cyan outline-none transition-all placeholder:text-white/10 text-center tracking-[1em]"
+                    placeholder="••••"
+                    maxLength={4}
                   />
                 </div>
               </div>
@@ -1132,7 +1110,7 @@ function LeagueApp() {
                 type="submit"
                 className="w-full bg-pl-cyan text-pl-ink py-5 rounded-xl font-display text-sm uppercase tracking-widest hover:brightness-110 transition-all shadow-[0_0_20px_rgba(0,255,249,0.3)]"
               >
-                {loginForm.isRegistering ? 'Create Account' : 'Sign In'}
+                Enter League
               </button>
             </form>
           ) : (
@@ -1151,15 +1129,6 @@ function LeagueApp() {
           )}
 
           <div className="mt-8 pt-8 border-t border-white/5 flex flex-col gap-4 text-center">
-            {!isAdminLoginMode && (
-              <button 
-                onClick={() => setLoginForm({ ...loginForm, isRegistering: !loginForm.isRegistering })}
-                className="text-[10px] font-condensed text-white/40 uppercase tracking-widest hover:text-pl-cyan transition-colors"
-              >
-                {loginForm.isRegistering ? 'Already have an account? Sign In' : 'First time? Create your password'}
-              </button>
-            )}
-            
             <button 
               onClick={() => setIsAdminLoginMode(!isAdminLoginMode)}
               className="text-[10px] font-condensed text-pl-cyan/60 uppercase tracking-widest hover:text-pl-cyan transition-colors flex items-center justify-center gap-2"
@@ -1192,21 +1161,44 @@ function LeagueApp() {
         <div className="max-w-5xl mx-auto px-6 py-12 text-center relative z-10">
           <div className="flex justify-center items-center gap-4 mb-8">
             <div className="flex items-center gap-3 glass px-4 py-2 rounded-full">
-              <img src={user.photoURL || ''} alt="" className="w-6 h-6 rounded-full border border-white/20" />
-              <span className="text-[10px] font-condensed font-bold text-white/60 uppercase tracking-widest">{user.displayName}</span>
+              <div className="w-6 h-6 rounded-full border border-white/20 bg-pl-pink flex items-center justify-center text-[10px] font-bold">
+                {user?.photoURL ? <img src={user.photoURL} alt="" className="w-full h-full rounded-full" /> : (user?.displayName?.[0] || 'G')}
+              </div>
+              <span className="text-[10px] font-condensed font-bold text-white/60 uppercase tracking-widest">{user?.displayName || 'Guest Viewer'}</span>
               <div className="w-px h-3 bg-white/10 mx-1" />
               <span className="text-[10px] font-condensed font-bold text-pl-cyan uppercase tracking-widest">£{userBudget}M</span>
-              <button onClick={logout} className="text-white/20 hover:text-pl-pink transition-colors">
+              <button onClick={() => { logout(); setIsGuest(false); }} className="text-white/20 hover:text-pl-pink transition-colors">
                 <LogOut size={14} />
               </button>
             </div>
           </div>
-            <span className="bg-pl-pink text-white px-3 py-1 text-[10px] font-condensed font-bold tracking-[0.2em] uppercase rounded-sm">
-              ⚽ SHATTA MOVEMENT
-            </span>
-            <span className="border border-white/20 text-white/60 px-3 py-1 text-[10px] font-condensed font-bold tracking-[0.2em] uppercase rounded-sm">
-              Season 2025/26
-            </span>
+
+          <div className="flex flex-col items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="bg-pl-pink text-white px-3 py-1 text-[10px] font-condensed font-bold tracking-[0.2em] uppercase rounded-sm">
+                ⚽ SHATTA MOVEMENT
+              </span>
+              <span className="border border-white/20 text-white/60 px-3 py-1 text-[10px] font-condensed font-bold tracking-[0.2em] uppercase rounded-sm">
+                Season {seasons.find(s => s.id === currentSeasonId)?.name || '...'}
+              </span>
+            </div>
+            
+            {seasons.length > 1 && (
+              <div className="flex items-center gap-2 bg-white/5 p-1 rounded-lg border border-white/5">
+                {seasons.map(s => (
+                  <button
+                    key={s.id}
+                    onClick={() => setCurrentSeasonId(s.id)}
+                    className={`px-3 py-1 rounded-md text-[8px] font-bold uppercase tracking-widest transition-all ${
+                      currentSeasonId === s.id ? 'bg-pl-cyan text-pl-ink shadow-lg' : 'text-white/40 hover:text-white/60'
+                    }`}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           
           <h1 className="font-display text-6xl md:text-8xl font-bold uppercase leading-[0.9] tracking-tight mb-4">
             SHATTA MOVEMENT <span className="text-pl-cyan">LEAGUE</span>
@@ -1241,8 +1233,8 @@ function LeagueApp() {
             { id: 'market', icon: MessageSquare, label: 'Market', public: true },
             { id: 'news', icon: Newspaper, label: 'News', public: true },
             { id: 'rules', icon: ShieldCheck, label: 'Rules', public: true },
-            { id: 'players', icon: Users, label: 'Squad', public: false },
-            { id: 'uefa', icon: Trophy, label: 'UEFA', public: false },
+            { id: 'players', icon: Users, label: 'Squad', public: true },
+            { id: 'uefa', icon: Trophy, label: 'UEFA', public: true },
             { id: 'admin', icon: ShieldCheck, label: 'Admin', public: false },
           ].filter(t => isAdmin || t.public).map((tab) => (
             <button
@@ -1391,29 +1383,33 @@ function LeagueApp() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <button 
-                    onClick={() => generateUefaDraw(true)}
-                    className="bg-white/5 text-white/40 px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
-                  >
-                    Reset Tournament
-                  </button>
-                  <button 
-                    onClick={() => generateUefaDraw(false)}
-                    className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform flex items-center gap-2"
-                  >
-                    <Swords size={14} /> {uefaFixtures.length === 0 ? 'Initiate Draw' : 'Next Round'}
-                  </button>
+                  {isAdmin && (
+                    <>
+                      <button 
+                        onClick={() => generateUefaDraw(true)}
+                        className="bg-white/5 text-white/40 px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+                      >
+                        Reset Tournament
+                      </button>
+                      <button 
+                        onClick={() => generateUefaDraw(false)}
+                        className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform flex items-center gap-2"
+                      >
+                        <Swords size={14} /> {uefaFixtures.length === 0 ? 'Initiate Draw' : 'Next Round'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 
-              {allFixtures.filter(f => f.competition === 'uefa').length === 0 ? (
+              {uefaFixtures.length === 0 ? (
                 <div className="text-center py-20 glass rounded-xl">
                   <Trophy className="mx-auto text-white/10 mb-4" size={48} />
-                  <p className="text-white/40 font-condensed tracking-widest uppercase">No UEFA matches drawn yet</p>
+                  <p className="text-white/40 font-condensed tracking-widest uppercase">No UEFA matches in this season</p>
                 </div>
               ) : (
                 <div className="space-y-10">
-                  {Array.from(new Set(allFixtures.filter(f => f.competition === 'uefa').map(f => f.matchday))).sort((a, b) => (b as number) - (a as number)).map(md => (
+                  {Array.from(new Set(uefaFixtures.map(f => f.matchday))).sort((a, b) => (b as number) - (a as number)).map(md => (
                     <div key={md} className="space-y-4">
                       <div className="flex items-center gap-4">
                         <div className="h-px flex-grow bg-white/10"></div>
@@ -1427,22 +1423,19 @@ function LeagueApp() {
                       </div>
                       
                       <div className="grid gap-4">
-                        {allFixtures.filter(f => f.competition === 'uefa' && f.matchday === md).map(f => {
+                        {uefaFixtures.filter(f => f.matchday === md).map(f => {
                           const isMyMatch = players.some(p => p.id === f.homeId || p.id === f.awayId);
                           return (
                             <div 
                               key={f.id}
                               onClick={() => {
-                                if (!isAdmin && !isMyMatch) return;
                                 setSelectedFixture(f);
                                 setScores({ home: f.homeScore || 0, away: f.awayScore || 0 });
                                 setShowModal(true);
                               }}
                               className={`glass transition-all rounded-lg p-6 flex items-center justify-between group border-l-4 ${
                                 isMyMatch ? 'border-pl-cyan bg-pl-cyan/5' : 'border-white/10'
-                              } ${
-                                isAdmin || isMyMatch ? 'hover:bg-white/10 cursor-pointer' : 'cursor-default'
-                              } ${
+                              } hover:bg-white/10 cursor-pointer ${
                                 f.homeId === f.awayId ? 'opacity-50' : ''
                               }`}
                             >
@@ -1501,22 +1494,76 @@ function LeagueApp() {
                 <h2 className="font-display text-2xl uppercase tracking-wider">
                   Match <span className="text-pl-pink">Fixtures</span>
                 </h2>
-                <button 
-                  onClick={generateSeason}
-                  className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform"
-                >
-                  Generate Season
-                </button>
+                <div className="flex gap-2">
+                  {isAdmin && (
+                    <>
+                      <button 
+                        onClick={() => setShowPreseasonModal(true)}
+                        className="bg-pl-pink text-white px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform"
+                      >
+                        Add Preseason
+                      </button>
+                      <button 
+                        onClick={generateSeason}
+                        className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:scale-105 transition-transform"
+                      >
+                        Generate Season
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
-              {allFixtures.filter(f => f.competition === 'league').length === 0 ? (
+              {fixtures.length === 0 && preseasonFixtures.length === 0 ? (
                 <div className="text-center py-20 glass rounded-xl">
                   <Calendar className="mx-auto text-white/10 mb-4" size={48} />
-                  <p className="text-white/40 font-condensed tracking-widest uppercase">No fixtures generated yet</p>
+                  <p className="text-white/40 font-condensed tracking-widest uppercase">No fixtures in this season</p>
                 </div>
               ) : (
-                <div className="space-y-10">
-                  {Array.from(new Set(allFixtures.filter(f => f.competition === 'league').map(f => f.matchday))).sort((a, b) => (a as number) - (b as number)).map(md => (
+                <div className="space-y-12">
+                  {/* Preseason Section */}
+                  {preseasonFixtures.length > 0 && (
+                    <div className="space-y-6">
+                      <div className="flex items-center gap-4">
+                        <div className="h-px w-8 bg-pl-pink/30"></div>
+                        <h3 className="font-display text-lg uppercase tracking-widest text-pl-pink">Preseason Matches</h3>
+                        <div className="h-px flex-grow bg-pl-pink/30"></div>
+                      </div>
+                      <div className="grid gap-3">
+                        {preseasonFixtures.map(f => {
+                          const isMyMatch = players.some(p => p.id === f.homeId || p.id === f.awayId);
+                          return (
+                            <div 
+                              key={f.id}
+                              onClick={() => {
+                                setSelectedFixture(f);
+                                setScores({ home: f.homeScore || 0, away: f.awayScore || 0 });
+                                setShowModal(true);
+                              }}
+                              className={`glass transition-all rounded-lg p-4 flex items-center justify-between group border-l-4 cursor-pointer hover:bg-white/10 ${
+                                isMyMatch ? 'border-pl-pink bg-pl-pink/5' : 'border-transparent'
+                              }`}
+                            >
+                              <div className="flex-1 text-right font-bold pr-6 group-hover:text-pl-pink transition-colors">{f.homeName}</div>
+                              <div className="flex items-center gap-4 bg-pl-ink/50 px-6 py-2 rounded-full border border-white/5">
+                                <div className="font-display text-2xl w-8 text-center">
+                                  {f.status === 'played' ? f.homeScore : '-'}
+                                </div>
+                                <div className="text-white/20 font-condensed text-[10px] uppercase tracking-widest">VS</div>
+                                <div className="font-display text-2xl w-8 text-center">
+                                  {f.status === 'played' ? f.awayScore : '-'}
+                                </div>
+                              </div>
+                              <div className="flex-1 text-left font-bold pl-6 group-hover:text-pl-pink transition-colors">{f.awayName}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* League Section */}
+                  {Array.from(new Set(fixtures.map(f => f.matchday))).sort((a, b) => (a as number) - (b as number)).map(md => (
                     <div key={md} className="space-y-4">
                       <div className="flex items-center gap-4">
                         <div className="h-px flex-grow bg-white/10"></div>
@@ -1525,7 +1572,7 @@ function LeagueApp() {
                       </div>
                       
                       <div className="grid gap-3">
-                        {allFixtures.filter(f => f.competition === 'league' && f.matchday === md).map(f => {
+                        {fixtures.filter(f => f.matchday === md).map(f => {
                           const isMyMatch = players.some(p => p.id === f.homeId || p.id === f.awayId);
                           return (
                             <div 
@@ -1539,40 +1586,41 @@ function LeagueApp() {
                                 isMyMatch ? 'border-pl-cyan bg-pl-cyan/5' : 'border-transparent'
                               }`}
                             >
-                            <div className="flex-1 text-right font-bold pr-6 group-hover:text-pl-cyan transition-colors">{f.homeName}</div>
-                            
-                            <div className="flex items-center gap-4 bg-pl-ink/50 px-6 py-2 rounded-full border border-white/5">
-                              <div className="font-display text-2xl w-8 text-center">
-                                {f.status === 'played' ? f.homeScore : '-'}
+                              <div className="flex-1 text-right font-bold pr-6 group-hover:text-pl-cyan transition-colors">{f.homeName}</div>
+                              
+                              <div className="flex items-center gap-4 bg-pl-ink/50 px-6 py-2 rounded-full border border-white/5">
+                                <div className="font-display text-2xl w-8 text-center">
+                                  {f.status === 'played' ? f.homeScore : '-'}
+                                </div>
+                                <div className="text-white/20 font-condensed text-[10px] uppercase tracking-widest">VS</div>
+                                <div className="font-display text-2xl w-8 text-center">
+                                  {f.status === 'played' ? f.awayScore : '-'}
+                                </div>
                               </div>
-                              <div className="text-white/20 font-condensed text-[10px] uppercase tracking-widest">VS</div>
-                              <div className="font-display text-2xl w-8 text-center">
-                                {f.status === 'played' ? f.awayScore : '-'}
-                              </div>
-                            </div>
-
-                            <div className="flex-1 text-left font-bold pl-6 group-hover:text-pl-cyan transition-colors">{f.awayName}</div>
-                            
-                            <div className="hidden md:flex flex-col items-end min-w-[100px] ml-4">
-                              <div className="flex items-center gap-2 mb-1">
-                                {comments.filter(c => c.fixtureId === f.id).length > 0 && (
-                                  <div className="flex items-center gap-1 text-[8px] text-pl-pink font-bold mr-2">
-                                    <MessageSquare size={10} />
-                                    {comments.filter(c => c.fixtureId === f.id).length}
-                                  </div>
-                                )}
-                                {f.status === 'played' && (
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      shareToWhatsApp(f);
-                                    }}
-                                    className="p-1 text-emerald-500 hover:scale-110 transition-transform"
-                                    title="Share to WhatsApp"
-                                  >
-                                    <MessageCircle size={14} />
-                                  </button>
-                                )}
+                              
+                              <div className="flex-1 text-left font-bold pl-6 group-hover:text-pl-cyan transition-colors">{f.awayName}</div>
+                              
+                              <div className="hidden md:flex flex-col items-end min-w-[100px] ml-4">
+                                <div className="flex items-center gap-2 mb-1">
+                                  {comments.filter(c => c.fixtureId === f.id).length > 0 && (
+                                    <div className="flex items-center gap-1 text-[8px] text-pl-pink font-bold mr-2">
+                                      <MessageSquare size={10} />
+                                      {comments.filter(c => c.fixtureId === f.id).length}
+                                    </div>
+                                  )}
+                                  {f.status === 'played' && (
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        shareToWhatsApp(f);
+                                      }}
+                                      className="p-1 text-emerald-500 hover:scale-110 transition-transform"
+                                      title="Share to WhatsApp"
+                                    >
+                                      <MessageCircle size={14} />
+                                    </button>
+                                  )}
+                                </div>
                                 <span className={`text-[8px] font-condensed font-bold uppercase tracking-widest px-2 py-1 rounded ${
                                   f.status === 'played' ? 'bg-green-500/10 text-green-400' : 
                                   f.status === 'overdue' ? 'bg-yellow-500/10 text-yellow-400' : 
@@ -1581,18 +1629,14 @@ function LeagueApp() {
                                   {f.status === 'played' ? 'Full Time' : f.status === 'overdue' ? 'Overdue' : 'Pending'}
                                 </span>
                               </div>
-                              <span className="text-[8px] text-white/20 uppercase tracking-widest font-condensed">
-                                {f.deadline}
-                              </span>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
           </motion.div>
         )}
 
@@ -1611,45 +1655,47 @@ function LeagueApp() {
               </div>
 
               <div className="grid md:grid-cols-3 gap-6">
-                <div className="md:col-span-1">
-                  <div className="glass rounded-xl p-6 sticky top-24">
-                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-pl-cyan mb-6">Add New Player</h3>
-                    <form onSubmit={addPlayer} className="space-y-4 mb-8 pb-8 border-b border-white/5">
-                      <div>
-                        <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">PSN / Name</label>
-                        <input name="name" required className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. PlayerOne" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Club Choice</label>
-                        <input name="club" className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. Man City" />
-                      </div>
-                      <button className="w-full bg-pl-pink text-white py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all flex items-center justify-center gap-2">
-                        <Plus size={14} /> Add to Squad
-                      </button>
-                    </form>
+                {isAdmin && (
+                  <div className="md:col-span-1">
+                    <div className="glass rounded-xl p-6 sticky top-24">
+                      <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-pl-cyan mb-6">Add New Player</h3>
+                      <form onSubmit={addPlayer} className="space-y-4 mb-8 pb-8 border-b border-white/5">
+                        <div>
+                          <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">PSN / Name</label>
+                          <input name="name" required className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. PlayerOne" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Club Choice</label>
+                          <input name="club" className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. Man City" />
+                        </div>
+                        <button className="w-full bg-pl-pink text-white py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all flex items-center justify-center gap-2">
+                          <Plus size={14} /> Add to Squad
+                        </button>
+                      </form>
 
-                    <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-pl-cyan mb-4">Bulk Import</h3>
-                    <div className="space-y-4">
-                      <textarea 
-                        value={bulkText}
-                        onChange={(e) => setBulkText(e.target.value)}
-                        placeholder="Paste names here (one per line)..."
-                        className="w-full h-32 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors resize-none"
-                      />
-                      <button 
-                        onClick={addBulkPlayers}
-                        className="w-full border border-pl-cyan text-pl-cyan py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:bg-pl-cyan hover:text-pl-ink transition-all flex items-center justify-center gap-2"
-                      >
-                        <Users size={14} /> Import List
-                      </button>
+                      <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-pl-cyan mb-4">Bulk Import</h3>
+                      <div className="space-y-4">
+                        <textarea 
+                          value={bulkText}
+                          onChange={(e) => setBulkText(e.target.value)}
+                          placeholder="Paste names here (one per line)..."
+                          className="w-full h-32 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors resize-none"
+                        />
+                        <button 
+                          onClick={addBulkPlayers}
+                          className="w-full border border-pl-cyan text-pl-cyan py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:bg-pl-cyan hover:text-pl-ink transition-all flex items-center justify-center gap-2"
+                        >
+                          <Users size={14} /> Import List
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
-                <div className="md:col-span-2 space-y-4">
+                <div className={`${isAdmin ? 'md:col-span-2' : 'md:col-span-3'} space-y-4`}>
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-condensed font-bold text-xs uppercase tracking-widest text-white/40">Current Squad ({players.length})</h3>
-                    {players.length > 0 && (
+                    {isAdmin && players.length > 0 && (
                       <button 
                         onClick={clearAllPlayers}
                         className="text-[10px] font-condensed font-bold uppercase tracking-widest text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
@@ -1679,27 +1725,31 @@ function LeagueApp() {
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setAuctionPlayer(p);
-                              setBidAmount(p.value || 10);
-                              setShowAuctionModal(true);
-                            }}
-                            className="p-2 text-white/20 hover:text-pl-cyan transition-colors md:opacity-0 md:group-hover:opacity-100"
-                            title="Auction Player"
-                          >
-                            <Swords size={16} />
-                          </button>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deletePlayer(p.id);
-                            }}
-                            className="p-2 text-white/20 hover:text-red-500 transition-colors md:opacity-0 md:group-hover:opacity-100"
-                          >
-                            <Trash2 size={16} />
-                          </button>
+                          {isAdmin && (
+                            <>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAuctionPlayer(p);
+                                  setBidAmount(p.value || 10);
+                                  setShowAuctionModal(true);
+                                }}
+                                className="p-2 text-white/20 hover:text-pl-cyan transition-colors md:opacity-0 md:group-hover:opacity-100"
+                                title="Auction Player"
+                              >
+                                <Swords size={16} />
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deletePlayer(p.id);
+                                }}
+                                className="p-2 text-white/20 hover:text-red-500 transition-colors md:opacity-0 md:group-hover:opacity-100"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1877,30 +1927,30 @@ function LeagueApp() {
                             </div>
                           </div>
 
-                          <div className="space-y-3">
-                            <div className="flex gap-2">
-                              <input 
-                                type="number" 
-                                placeholder="Bid amount..."
-                                className="flex-1 bg-pl-ink border border-white/10 rounded px-3 py-2 text-xs focus:border-pl-cyan outline-none transition-colors"
-                                onChange={(e) => setBidAmount(parseInt(e.target.value) || 0)}
-                              />
-                              <button 
-                                onClick={() => placeBid(auction, bidAmount)}
-                                className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-[10px] uppercase tracking-widest hover:brightness-110 transition-all"
-                              >
-                                Bid
-                              </button>
-                            </div>
-                            {isAdmin && (
+                          {isAdmin && (
+                            <div className="space-y-3">
+                              <div className="flex gap-2">
+                                <input 
+                                  type="number" 
+                                  placeholder="Bid amount..."
+                                  className="flex-1 bg-pl-ink border border-white/10 rounded px-3 py-2 text-xs focus:border-pl-cyan outline-none transition-colors"
+                                  onChange={(e) => setBidAmount(parseInt(e.target.value) || 0)}
+                                />
+                                <button 
+                                  onClick={() => placeBid(auction, bidAmount)}
+                                  className="bg-pl-cyan text-pl-ink px-4 py-2 rounded font-condensed font-bold text-[10px] uppercase tracking-widest hover:brightness-110 transition-all"
+                                >
+                                  Bid
+                                </button>
+                              </div>
                               <button 
                                 onClick={() => completeAuction(auction)}
                                 className="w-full border border-white/10 text-white/40 py-2 rounded font-condensed font-bold text-[10px] uppercase tracking-widest hover:bg-white/5 transition-all"
                               >
                                 Admin: Complete
                               </button>
-                            )}
-                          </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1990,7 +2040,7 @@ function LeagueApp() {
                     {article.imageUrl && (
                       <div className="aspect-video relative overflow-hidden">
                         <img 
-                          src={article.imageUrl} 
+                          src={article.imageUrl || undefined} 
                           alt={article.title} 
                           className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
                           referrerPolicy="no-referrer"
@@ -2128,11 +2178,18 @@ function LeagueApp() {
               
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <button 
-                  onClick={generateSeason}
+                  onClick={() => setShowSeasonModal(true)}
                   className="flex flex-col items-center justify-center p-6 glass rounded-xl hover:bg-pl-cyan/10 transition-all group border border-white/5"
                 >
                   <Calendar className="text-pl-cyan mb-3 group-hover:scale-110 transition-transform" size={24} />
-                  <span className="font-condensed font-bold text-xs uppercase tracking-widest">Generate Season</span>
+                  <span className="font-condensed font-bold text-xs uppercase tracking-widest">Manage Seasons</span>
+                </button>
+                <button 
+                  onClick={() => setShowPreseasonModal(true)}
+                  className="flex flex-col items-center justify-center p-6 glass rounded-xl hover:bg-pl-pink/10 transition-all group border border-white/5"
+                >
+                  <Plus className="text-pl-pink mb-3 group-hover:scale-110 transition-transform" size={24} />
+                  <span className="font-condensed font-bold text-xs uppercase tracking-widest">Add Preseason Match</span>
                 </button>
                 <button 
                   onClick={resetLeague}
@@ -2151,67 +2208,8 @@ function LeagueApp() {
               </div>
             </div>
 
-            {/* Player Management & Pre-Registration */}
-            <div className="grid lg:grid-cols-2 gap-8">
-              {/* Pre-Registration */}
-              <div className="glass p-8 rounded-2xl border-l-4 border-pl-cyan">
-                <div className="flex items-center gap-4 mb-8">
-                  <div className="w-12 h-12 bg-pl-cyan/10 rounded-xl flex items-center justify-center">
-                    <UserIcon className="text-pl-cyan" size={24} />
-                  </div>
-                  <div>
-                    <h2 className="font-display text-2xl uppercase tracking-wider">Pre-<span className="text-pl-cyan">Registration</span></h2>
-                    <p className="text-white/40 font-condensed uppercase tracking-widest text-[10px]">Whitelist PSN IDs for signup</p>
-                  </div>
-                  <div className="ml-auto">
-                    <button 
-                      onClick={syncPlayersToPreReg}
-                      className="flex items-center gap-2 px-4 py-2 bg-pl-cyan/10 text-pl-cyan rounded-xl hover:bg-pl-cyan/20 transition-all border border-pl-cyan/20"
-                    >
-                      <Users size={14} />
-                      <span className="font-condensed font-bold text-[10px] uppercase tracking-widest">Sync Squad</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex gap-2 mb-8">
-                  <input 
-                    type="text"
-                    value={newPsnId}
-                    onChange={(e) => setNewPsnId(e.target.value)}
-                    placeholder="Enter PSN ID..."
-                    className="flex-1 bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-cyan outline-none transition-colors"
-                  />
-                  <button 
-                    onClick={addPreRegPsn}
-                    className="bg-pl-cyan text-pl-ink px-6 rounded-xl font-condensed font-bold text-[10px] uppercase tracking-widest hover:brightness-110 transition-all"
-                  >
-                    Whitelist
-                  </button>
-                </div>
-
-                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 no-scrollbar">
-                  {preRegisteredPsns.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
-                      <div>
-                        <div className="font-bold text-sm">{p.psnId}</div>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className={`text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${p.claimed ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/10 text-white/40'}`}>
-                            {p.claimed ? 'Registered' : 'Pending'}
-                          </span>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => deletePreRegPsn(p.id)}
-                        className="text-white/20 hover:text-red-500 transition-colors"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
+            {/* Player Management */}
+            <div className="grid lg:grid-cols-1 gap-8">
               {/* Player Management */}
               <div className="glass p-8 rounded-2xl border-l-4 border-emerald-400">
                 <div className="flex items-center gap-4 mb-8">
@@ -2338,6 +2336,133 @@ function LeagueApp() {
         </div>
       )}
 
+      {/* Season Management Modal */}
+      {showSeasonModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-pl-ink/90 backdrop-blur-sm"
+            onClick={() => setShowSeasonModal(false)}
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="glass rounded-2xl p-8 w-full max-w-md relative z-10"
+          >
+            <h3 className="font-display text-xl uppercase tracking-widest text-pl-cyan mb-6">Manage Seasons</h3>
+            
+            <div className="space-y-4 mb-8">
+              <div>
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">New Season Name</label>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={newSeasonName}
+                    onChange={(e) => setNewSeasonName(e.target.value)}
+                    placeholder="e.g. Season 2, Winter 2026..."
+                    className="flex-1 bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-cyan outline-none transition-colors"
+                  />
+                  <button 
+                    onClick={addSeason}
+                    className="bg-pl-cyan text-pl-ink px-4 rounded-xl font-condensed font-bold text-[10px] uppercase tracking-widest hover:brightness-110"
+                  >
+                    Create
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-t border-white/5 pt-4">
+                <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">All Seasons</label>
+                <div className="space-y-2 max-h-48 overflow-y-auto no-scrollbar">
+                  {seasons.map(s => (
+                    <div key={s.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5">
+                      <span className="text-xs font-bold">{s.name}</span>
+                      <button 
+                        onClick={() => toggleSeasonActive(s.id)}
+                        className={`px-3 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest transition-all ${
+                          s.active ? 'bg-pl-cyan text-pl-ink' : 'bg-white/10 text-white/40 hover:bg-white/20'
+                        }`}
+                      >
+                        {s.active ? 'Active' : 'Set Active'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button 
+              onClick={() => setShowSeasonModal(false)}
+              className="w-full bg-white/5 text-white/60 py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+            >
+              Close
+            </button>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Preseason Match Modal */}
+      {showPreseasonModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 bg-pl-ink/90 backdrop-blur-sm"
+            onClick={() => setShowPreseasonModal(false)}
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="glass rounded-2xl p-8 w-full max-w-md relative z-10"
+          >
+            <h3 className="font-display text-xl uppercase tracking-widest text-pl-pink mb-6">Add Preseason Match</h3>
+            
+            <div className="space-y-6 mb-8">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Home Player</label>
+                  <select 
+                    value={preseasonFixture.homeId}
+                    onChange={(e) => setPreseasonFixture({ ...preseasonFixture, homeId: e.target.value })}
+                    className="w-full bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-pink outline-none transition-colors"
+                  >
+                    <option value="">Select Player</option>
+                    {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Away Player</label>
+                  <select 
+                    value={preseasonFixture.awayId}
+                    onChange={(e) => setPreseasonFixture({ ...preseasonFixture, awayId: e.target.value })}
+                    className="w-full bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-pink outline-none transition-colors"
+                  >
+                    <option value="">Select Player</option>
+                    {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={addPreseasonFixture}
+                className="bg-pl-pink text-white py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all"
+              >
+                Add Match
+              </button>
+              <button 
+                onClick={() => setShowPreseasonModal(false)}
+                className="bg-white/5 text-white/60 py-4 rounded-lg font-condensed font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
       {/* Score / Fixture Detail Modal */}
       {showModal && selectedFixture && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
@@ -2354,8 +2479,7 @@ function LeagueApp() {
           >
             <div className="flex justify-between items-start mb-6">
               {(() => {
-                const isMyMatch = players.some(p => p.id === selectedFixture.homeId || p.id === selectedFixture.awayId);
-                const canEdit = isAdmin || (isMyMatch && selectedFixture.status !== 'played');
+                const canEdit = isAdmin;
                 return (
                   <>
                     <div>
@@ -2378,8 +2502,7 @@ function LeagueApp() {
             </div>
             
             {(() => {
-              const isMyMatch = players.some(p => p.id === selectedFixture.homeId || p.id === selectedFixture.awayId);
-              const canEdit = isAdmin || (isMyMatch && selectedFixture.status !== 'played');
+              const canEdit = isAdmin;
               return (
                 <>
                   <div className="flex items-center justify-between gap-6 mb-10">
@@ -2448,7 +2571,7 @@ function LeagueApp() {
               <div className="space-y-4 mb-6 max-h-60 overflow-y-auto no-scrollbar pr-2">
                 {comments.filter(c => c.fixtureId === selectedFixture.id).map((comment) => (
                   <div key={comment.id} className="flex gap-3 group">
-                    <img src={comment.authorPhoto || ''} alt="" className="w-8 h-8 rounded-full border border-white/10 flex-shrink-0" />
+                    <img src={comment.authorPhoto || undefined} alt="" className="w-8 h-8 rounded-full border border-white/10 flex-shrink-0" />
                     <div className="flex-1">
                       <div className="flex justify-between items-center mb-1">
                         <span className="text-[10px] font-bold text-pl-cyan uppercase tracking-widest">{comment.authorName}</span>
@@ -2474,22 +2597,24 @@ function LeagueApp() {
                 )}
               </div>
 
-              <div className="flex gap-2">
-                <input 
-                  type="text" 
-                  value={newComment}
-                  onChange={(e) => setNewComment(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && addComment(selectedFixture.id)}
-                  placeholder="Type your banter..."
-                  className="flex-1 bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-cyan outline-none transition-colors"
-                />
-                <button 
-                  onClick={() => addComment(selectedFixture.id)}
-                  className="bg-pl-pink text-white p-3 rounded-xl hover:scale-105 transition-transform"
-                >
-                  <Send size={16} />
-                </button>
-              </div>
+              {isAdmin && (
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={newComment}
+                    onChange={(e) => setNewComment(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addComment(selectedFixture.id)}
+                    placeholder="Type your banter..."
+                    className="flex-1 bg-pl-ink border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-pl-cyan outline-none transition-colors"
+                  />
+                  <button 
+                    onClick={() => addComment(selectedFixture.id)}
+                    className="bg-pl-pink text-white p-3 rounded-xl hover:scale-105 transition-transform"
+                  >
+                    <Send size={16} />
+                  </button>
+                </div>
+              )}
             </div>
           </motion.div>
         </div>
