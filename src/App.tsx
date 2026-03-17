@@ -1852,7 +1852,7 @@ function LeagueApp() {
                         className="flex-1 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors"
                       >
                         <option value="">Player 1</option>
-                        {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        {[...allPlayers].sort((a, b) => a.name.localeCompare(b.name)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                       <div className="font-display text-xl text-white/20">VS</div>
                       <select 
@@ -1861,7 +1861,7 @@ function LeagueApp() {
                         className="flex-1 bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors"
                       >
                         <option value="">Player 2</option>
-                        {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        {[...allPlayers].sort((a, b) => a.name.localeCompare(b.name)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                     </div>
                   </div>
