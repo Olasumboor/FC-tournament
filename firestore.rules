@@ -109,7 +109,8 @@ service cloud.firestore {
       return isAuthenticated() &&
         ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
-         request.auth.token.email == "olaniyantoheebola@gmail.com");
+         request.auth.token.email == "olaniyantoheebola@gmail.com" ||
+         request.auth.token.email == "thelegendaryeman@gmail.com");
     }
 
     function isOwner(userId) {

@@ -305,13 +305,24 @@ function LeagueApp() {
           role = userSnap.data().role || 'user';
         }
         
-        // Hardcoded admin for the provided email
-        if (currentUser.email === 'olaniyantoheebola@gmail.com') {
+        // Hardcoded admin for the provided emails
+        const userEmail = currentUser.email?.toLowerCase().trim();
+        console.log("Auth State Changed: User Email =", userEmail);
+        
+        let isHardcodedAdmin = false;
+        if (userEmail === 'olaniyantoheebola@gmail.com' || userEmail === 'thelegendaryeman@gmail.com') {
           role = 'admin';
+          isHardcodedAdmin = true;
+          console.log("Admin access granted for:", userEmail);
         }
         
-        setIsAdmin(role === 'admin');
+        const finalIsAdmin = role === 'admin' || isHardcodedAdmin;
+        setIsAdmin(finalIsAdmin);
         setSelectedUserUid(currentUser.uid);
+
+        if (finalIsAdmin) {
+          showToast(`Logged in as Admin: ${userEmail}`);
+        }
 
         setDoc(userRef, {
           uid: currentUser.uid,
@@ -1164,7 +1175,10 @@ function LeagueApp() {
           ) : (
             <div className="space-y-6">
               <button 
-                onClick={loginWithGoogle}
+                onClick={() => loginWithGoogle().catch(err => {
+                  console.error("Google Login Error:", err);
+                  setAuthError(err.message);
+                })}
                 className="w-full bg-white text-pl-ink py-5 rounded-xl font-display text-sm uppercase tracking-widest flex items-center justify-center gap-4 hover:bg-white/90 transition-all shadow-xl"
               >
                 <img src="https://www.google.com/favicon.ico" alt="" className="w-5 h-5" />
