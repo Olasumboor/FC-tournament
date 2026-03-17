@@ -310,7 +310,7 @@ function LeagueApp() {
         console.log("Auth State Changed: User Email =", userEmail);
         
         let isHardcodedAdmin = false;
-        if (userEmail === 'olaniyantoheebola@gmail.com' || userEmail === 'thelegendaryeman@gmail.com') {
+        if (userEmail === 'olaniyantoheebola@gmail.com' || userEmail === 'thelegendaryeman@gmail.com' || userEmail === 'alikibogy@gmail.com') {
           role = 'admin';
           isHardcodedAdmin = true;
           console.log("Admin access granted for:", userEmail);
