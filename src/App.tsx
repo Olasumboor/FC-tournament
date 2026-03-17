@@ -510,50 +510,97 @@ function LeagueApp() {
         batch.delete(doc(db, 'fixtures', f.id));
       });
 
-      // Generate Round Robin
-      const playerIds = players.map(p => p.id);
-      const n = playerIds.length;
-      const rounds = n % 2 === 0 ? n - 1 : n;
-      const matchesPerRound = Math.floor(n / 2);
-
-      const today = new Date();
+      // Generate Double Round Robin
+      let teamIds = players.map(p => p.id);
+      if (teamIds.length % 2 !== 0) {
+        teamIds.push('BYE'); // Add dummy player for odd number of teams
+      }
       
-      for (let round = 0; round < rounds; round++) {
+      const n = teamIds.length;
+      const roundsPerHalf = n - 1;
+      const matchesPerRound = n / 2;
+      const today = new Date();
+
+      // First Half (Home/Away assigned by rotation)
+      for (let round = 0; round < roundsPerHalf; round++) {
         const deadline = new Date(today);
         deadline.setDate(today.getDate() + (round + 1) * 7);
         const deadlineStr = deadline.toISOString().split('T')[0];
 
-        for (let match = 0; match < matchesPerRound; match++) {
-          const homeIdx = (round + match) % (n - 1);
-          let awayIdx = (n - 1 - match + round) % (n - 1);
+        for (let i = 0; i < matchesPerRound; i++) {
+          const homeIdx = (round + i) % (n - 1);
+          let awayIdx = (n - 1 - i + round) % (n - 1);
 
-          if (match === 0) awayIdx = n - 1;
+          if (i === 0) awayIdx = n - 1;
 
-          const homeId = playerIds[homeIdx];
-          const awayId = playerIds[awayIdx];
-          const homePlayer = players.find(p => p.id === homeId)!;
-          const awayPlayer = players.find(p => p.id === awayId)!;
+          const homeId = teamIds[homeIdx];
+          const awayId = teamIds[awayIdx];
 
-          const fixtureRef = doc(collection(db, 'fixtures'));
-          batch.set(fixtureRef, {
-            matchday: round + 1,
-            homeId,
-            awayId,
-            homeName: homePlayer.name,
-            awayName: awayPlayer.name,
-            homeScore: null,
-            awayScore: null,
-            status: 'pending',
-            deadline: deadlineStr,
-            competition: 'league',
-            ownerUid: user.uid,
-            seasonId: currentSeasonId
-          });
+          if (homeId !== 'BYE' && awayId !== 'BYE') {
+            const homePlayer = players.find(p => p.id === homeId)!;
+            const awayPlayer = players.find(p => p.id === awayId)!;
+
+            const fixtureRef = doc(collection(db, 'fixtures'));
+            batch.set(fixtureRef, {
+              matchday: round + 1,
+              homeId,
+              awayId,
+              homeName: homePlayer.name,
+              awayName: awayPlayer.name,
+              homeScore: null,
+              awayScore: null,
+              status: 'pending',
+              deadline: deadlineStr,
+              competition: 'league',
+              ownerUid: user.uid,
+              seasonId: currentSeasonId
+            });
+          }
+        }
+      }
+
+      // Second Half (Reverse Home/Away)
+      for (let round = 0; round < roundsPerHalf; round++) {
+        const matchday = round + 1 + roundsPerHalf;
+        const deadline = new Date(today);
+        deadline.setDate(today.getDate() + (matchday) * 7);
+        const deadlineStr = deadline.toISOString().split('T')[0];
+
+        for (let i = 0; i < matchesPerRound; i++) {
+          const homeIdx = (round + i) % (n - 1);
+          let awayIdx = (n - 1 - i + round) % (n - 1);
+
+          if (i === 0) awayIdx = n - 1;
+
+          // Swap home and away for the second half
+          const awayId = teamIds[homeIdx];
+          const homeId = teamIds[awayIdx];
+
+          if (homeId !== 'BYE' && awayId !== 'BYE') {
+            const homePlayer = players.find(p => p.id === homeId)!;
+            const awayPlayer = players.find(p => p.id === awayId)!;
+
+            const fixtureRef = doc(collection(db, 'fixtures'));
+            batch.set(fixtureRef, {
+              matchday: matchday,
+              homeId,
+              awayId,
+              homeName: homePlayer.name,
+              awayName: awayPlayer.name,
+              homeScore: null,
+              awayScore: null,
+              status: 'pending',
+              deadline: deadlineStr,
+              competition: 'league',
+              ownerUid: user.uid,
+              seasonId: currentSeasonId
+            });
+          }
         }
       }
 
       await batch.commit();
-      showToast("Season generated successfully!");
+      showToast("Double Round Robin Season generated successfully!");
     } catch (err) {
       console.error("Generation failed", err);
       showToast(err instanceof Error ? err.message : "Generation failed", 'error');
