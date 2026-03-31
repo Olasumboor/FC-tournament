@@ -699,11 +699,13 @@ function LeagueApp() {
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
     const club = formData.get('club') as string;
+    const bio = formData.get('bio') as string;
 
     try {
       await addDoc(collection(db, 'players'), {
         name,
         club,
+        bio: bio || '',
         ownerUid: user.uid,
         createdAt: serverTimestamp()
       });
@@ -1730,6 +1732,10 @@ function LeagueApp() {
                           <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Club Choice</label>
                           <input name="club" className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors" placeholder="e.g. Man City" />
                         </div>
+                        <div>
+                          <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest mb-2">Biography (Optional)</label>
+                          <textarea name="bio" className="w-full bg-pl-ink border border-white/10 rounded px-4 py-3 text-sm focus:border-pl-cyan outline-none transition-colors h-20 resize-none" placeholder="Brief player bio..." />
+                        </div>
                         <button className="w-full bg-pl-pink text-white py-3 rounded font-condensed font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all flex items-center justify-center gap-2">
                           <Plus size={14} /> Add to Squad
                         </button>
@@ -2286,9 +2292,17 @@ function LeagueApp() {
 
                 <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 no-scrollbar">
                   {allPlayers.sort((a, b) => a.name.localeCompare(b.name)).map((p) => (
-                    <div key={p.id} className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all">
+                    <div 
+                      key={p.id} 
+                      onClick={() => {
+                        setSelectedPlayer(p);
+                        setPlayerBio(p.bio || '');
+                        setShowPlayerModal(true);
+                      }}
+                      className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all cursor-pointer group"
+                    >
                       <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-400/10 flex items-center justify-center text-emerald-400 font-bold">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-400/10 flex items-center justify-center text-emerald-400 font-bold group-hover:bg-emerald-400/20 transition-colors">
                           {p.name.charAt(0)}
                         </div>
                         <div>
@@ -2297,7 +2311,10 @@ function LeagueApp() {
                         </div>
                       </div>
                       <button 
-                        onClick={() => deletePlayer(p.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deletePlayer(p.id);
+                        }}
                         className="text-white/20 hover:text-red-500 transition-colors p-2"
                       >
                         <Trash2 size={16} />
@@ -2733,30 +2750,15 @@ function LeagueApp() {
 
             <div className="space-y-4 mb-8">
               <label className="block text-[10px] font-condensed text-white/40 uppercase tracking-widest">Player Biography</label>
-              {selectedPlayer.bio ? (
-                <div className="space-y-4">
-                  <p className="text-sm text-white/70 leading-relaxed italic">"{selectedPlayer.bio}"</p>
-                  <button 
-                    onClick={() => setPlayerBio(selectedPlayer.bio || '')}
-                    className="text-[10px] font-bold text-pl-cyan uppercase tracking-widest hover:underline"
-                  >
-                    Edit Bio
-                  </button>
-                </div>
-              ) : (
-                <div className="bg-pl-cyan/5 border border-dashed border-pl-cyan/20 p-6 rounded-xl text-center">
-                  <p className="text-xs text-pl-cyan/60 font-condensed uppercase tracking-widest mb-4">No biography added yet</p>
-                </div>
-              )}
-              
-              <div className="mt-4">
+              <div className="bg-white/5 border border-white/10 rounded-xl overflow-hidden">
                 <textarea 
                   value={playerBio}
                   onChange={(e) => setPlayerBio(e.target.value)}
                   placeholder="Enter a brief bio for this player..."
-                  className="w-full bg-pl-ink border border-white/10 rounded-xl p-4 text-sm text-white/80 focus:border-pl-cyan outline-none transition-colors h-24 resize-none"
+                  className="w-full bg-transparent p-4 text-sm text-white/80 focus:bg-white/5 outline-none transition-all h-32 resize-none border-none"
                 />
               </div>
+              <p className="text-[9px] text-white/20 uppercase tracking-widest text-right">Max 1000 characters</p>
             </div>
 
             <div className="grid grid-cols-2 gap-3">

@@ -151,7 +151,7 @@ service cloud.firestore {
       return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.club is string && data.club.size() > 0 && data.club.size() < 100 &&
              (data.ownerUid == request.auth.uid || isAdmin()) &&
-             (!('bio' in data) || (data.bio is string && data.bio.size() < 500)) &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 1000)) &&
              (!('value' in data) || data.value is int);
     }
 
@@ -211,7 +211,13 @@ service cloud.firestore {
 
     match /players/{playerId} {
       allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow create: if isAdmin() && isValidPlayer(request.resource.data);
+      allow update: if isAdmin() || 
+                    (isAuthenticated() && 
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bio']) &&
+                     request.resource.data.bio is string && 
+                     request.resource.data.bio.size() <= 1000);
+      allow delete: if isAdmin();
     }
 
     match /fixtures/{fixtureId} {
