@@ -504,6 +504,14 @@ function LeagueApp() {
     }
   };
 
+  const TEAMS_POOL = [
+    "Aston Villa", "Brighton & Hove Albion", "Brentford", "Burnley", "Crystal Palace",
+    "Everton", "Fulham", "Ipswich Town", "Leicester City", "Luton Town",
+    "Nottingham Forest", "Sheffield United", "West Ham United", "Wolverhampton Wanderers",
+    "Olympique de Marseille", "Newcastle United", "Tottenham Hotspur", "Chelsea",
+    "Manchester United", "Liverpool", "Manchester City", "Arsenal"
+  ];
+
   const generateSeason = async () => {
     if (!isAdmin || !user || !currentSeasonId) {
       showToast("Please select or create a season first", 'error');
@@ -515,6 +523,14 @@ function LeagueApp() {
 
       const batch = writeBatch(db);
       
+      // Randomize teams for each player
+      const shuffledTeams = [...TEAMS_POOL].sort(() => Math.random() - 0.5);
+      const updatedPlayers = players.map((p, index) => {
+        const assignedTeam = shuffledTeams[index % shuffledTeams.length];
+        batch.update(doc(db, 'players', p.id), { club: assignedTeam });
+        return { ...p, club: assignedTeam };
+      });
+
       // Clear existing league fixtures for THIS season
       const existingFixtures = fixtures.filter(f => f.competition === 'league' && f.seasonId === currentSeasonId);
       existingFixtures.forEach(f => {
@@ -522,7 +538,7 @@ function LeagueApp() {
       });
 
       // Generate Double Round Robin
-      let teamIds = players.map(p => p.id);
+      let teamIds = updatedPlayers.map(p => p.id);
       if (teamIds.length % 2 !== 0) {
         teamIds.push('BYE'); // Add dummy player for odd number of teams
       }
@@ -548,8 +564,8 @@ function LeagueApp() {
           const awayId = teamIds[awayIdx];
 
           if (homeId !== 'BYE' && awayId !== 'BYE') {
-            const homePlayer = players.find(p => p.id === homeId)!;
-            const awayPlayer = players.find(p => p.id === awayId)!;
+            const homePlayer = updatedPlayers.find(p => p.id === homeId)!;
+            const awayPlayer = updatedPlayers.find(p => p.id === awayId)!;
 
             const fixtureRef = doc(collection(db, 'fixtures'));
             batch.set(fixtureRef, {
@@ -588,8 +604,8 @@ function LeagueApp() {
           const homeId = teamIds[awayIdx];
 
           if (homeId !== 'BYE' && awayId !== 'BYE') {
-            const homePlayer = players.find(p => p.id === homeId)!;
-            const awayPlayer = players.find(p => p.id === awayId)!;
+            const homePlayer = updatedPlayers.find(p => p.id === homeId)!;
+            const awayPlayer = updatedPlayers.find(p => p.id === awayId)!;
 
             const fixtureRef = doc(collection(db, 'fixtures'));
             batch.set(fixtureRef, {
@@ -611,7 +627,7 @@ function LeagueApp() {
       }
 
       await batch.commit();
-      showToast("Double Round Robin Season generated successfully!");
+      showToast("Double Round Robin Season generated with randomized teams!");
     } catch (err) {
       console.error("Generation failed", err);
       showToast(err instanceof Error ? err.message : "Generation failed", 'error');
